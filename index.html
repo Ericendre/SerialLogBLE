@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ESP32C3 Live MAX31855</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    button { padding: 10px 14px; margin-right: 8px; }
+    #status { margin: 10px 0; }
+    #last { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    canvas { max-width: 100%; }
+  </style>
+</head>
+<body>
+  <h2>Live MAX31855 (BLE NUS)</h2>
+  <div>
+    <button id="btnConnect">Connecter</button>
+    <button id="btnDisconnect" disabled>Déconnecter</button>
+    <label style="margin-left:10px;">
+      Fenêtre (points):
+      <input id="win" type="number" value="200" min="20" max="5000" style="width:90px;">
+    </label>
+  </div>
+  <div id="status">Statut: <b>déconnecté</b></div>
+  <div>Dernière trame: <span id="last">—</span></div>
+
+  <canvas id="chart" height="120"></canvas>
+
+<script>
+const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // notify (ESP->web)
+
+let device, server, service, txChar;
+let decoder = new TextDecoder("utf-8");
+let rxBuffer = "";
+
+const statusEl = document.getElementById("status");
+const lastEl = document.getElementById("last");
+const btnConnect = document.getElementById("btnConnect");
+const btnDisconnect = document.getElementById("btnDisconnect");
+const winEl = document.getElementById("win");
+
+const ctx = document.getElementById("chart");
+const chart = new Chart(ctx, {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [
+      { label: "Thermocouple (°C)", data: [], tension: 0.15 },
+      { label: "Interne (°C)", data: [], tension: 0.15 },
+    ],
+  },
+  options: {
+    animation: false,
+    parsing: false,
+    responsive: true,
+    scales: {
+      x: { title: { display: true, text: "t (ms)" } },
+      y: { title: { display: true, text: "°C" } },
+    },
+    plugins: {
+      legend: { display: true }
+    }
+  }
+});
+
+function setStatus(s) {
+  statusEl.innerHTML = `Statut: <b>${s}</b>`;
+}
+
+function pushPoint(t, tc, ti) {
+  const maxPoints = parseInt(winEl.value || "200", 10);
+  chart.data.labels.push(t);
+  chart.data.datasets[0].data.push(tc);
+  chart.data.datasets[1].data.push(ti);
+
+  while (chart.data.labels.length > maxPoints) {
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+    chart.data.datasets[1].data.shift();
+  }
+  chart.update("none");
+}
+
+function onNotify(event) {
+  const v = new Uint8Array(event.target.value.buffer);
+  rxBuffer += decoder.decode(v, {stream:true});
+
+  // traite ligne par ligne
+  let idx;
+  while ((idx = rxBuffer.indexOf("\n")) >= 0) {
+    const line = rxBuffer.slice(0, idx).trim();
+    rxBuffer = rxBuffer.slice(idx + 1);
+
+    if (!line) continue;
+    lastEl.textContent = line;
+
+    // attend format: t_ms,tc,int,fault
+    const parts = line.split(",");
+    if (parts.length < 4) continue;
+
+    const t = Number(parts[0]);
+    const tc = Number(parts[1]);
+    const ti = Number(parts[2]);
+    const fault = Number(parts[3]);
+
+    if (Number.isFinite(t) && Number.isFinite(tc) && Number.isFinite(ti)) {
+      // option : ignorer si fault != 0
+      if (fault === 0) pushPoint(t, tc, ti);
+    }
+  }
+}
+
+btnConnect.onclick = async () => {
+  try {
+    setStatus("connexion…");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+    device.addEventListener("gattserverdisconnected", () => {
+      setStatus("déconnecté");
+      btnDisconnect.disabled = true;
+      btnConnect.disabled = false;
+    });
+
+    server = await device.gatt.connect();
+    service = await server.getPrimaryService(SERVICE_UUID);
+    txChar = await service.getCharacteristic(TX_CHAR_UUID);
+
+    await txChar.startNotifications();
+    txChar.addEventListener("characteristicvaluechanged", onNotify);
+
+    setStatus("connecté à " + device.name);
+    btnDisconnect.disabled = false;
+    btnConnect.disabled = true;
+  } catch (e) {
+    console.error(e);
+    setStatus("erreur: " + e.message);
+  }
+};
+
+btnDisconnect.onclick = async () => {
+  try {
+    if (device?.gatt?.connected) device.gatt.disconnect();
+  } catch (e) {}
+};
+</script>
+</body>
+</html>
