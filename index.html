@@ -10,7 +10,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
-    body { font-family: system-ui, sans-serif; margin: 16px; }
+    body { font-family: system-ui, sans-serif; margin: 16px; min-height: 100vh; box-sizing: border-box; }
     html, body { height: 100%; }
     body { display: flex; flex-direction: column; }
     button { padding: 10px 14px; }
@@ -22,25 +22,29 @@
     label { display:flex; align-items:center; gap:8px; }
     .pill { padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px; }
     .muted { opacity: .75; }
-    #chartWrap { height: 440px; width: 100%; max-width: 1300px; position: relative; }
+    /* avoid fixed pixel height so the chart can flex to available space */
+    #chartWrap { height: auto; width: 100%; max-width: 1300px; position: relative; }
     canvas { display:block; width:100% !important; height:100% !important; }
 
     /* Main layout: chart + right sidebar */
-    #main { display: flex; gap: 12px; align-items: stretch; height: calc(100vh - 260px); }
-    #chartPane { flex: 1 1 auto; min-width: 200px; }
+    #main { display: flex; gap: 12px; align-items: stretch; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+    #chartPane { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 200px; min-height: 0; }
     #chartWrap { height: 100%; max-width: none; }
     #sidePane { width: 360px; background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 8px; box-sizing: border-box; overflow: hidden; }
     #fieldReadouts { height: 100%; }
     .fieldItem { display:flex; flex-direction:column; justify-content:center; align-items:center; padding:8px; border-radius:6px; background:#fff; margin:0; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border-bottom:1px solid #f3f3f3; flex: 1 1 auto; overflow: hidden; }
     .fieldItem .label { font-weight:700; font-size:0.9rem; margin-bottom:6px; color:#333; }
-    .fieldItem .value { font-variant-numeric: tabular-nums; font-weight:700; color:#111; display:flex; align-items:baseline; gap:6px; }
-    .fieldItem .unit { font-size:0.55em; opacity:0.75; color:#444; }
+    .fieldItem .value { font-variant-numeric: tabular-nums; font-weight:700; color:#111; }
     .fieldItem { position:relative; }
     .fieldItem .gear { position:absolute; top:6px; right:6px; display:none; border:1px solid #ddd; background:#fff; padding:4px 6px; border-radius:6px; cursor:pointer; }
     .fieldItem:hover .gear { display:block; }
-    /* scale value font depending on number of fields and available height */
-    #fieldReadouts { --field-count: 1; }
-    .fieldItem .value { font-size: calc((100vh - 260px) / var(--field-count) * 0.45); line-height:1; }
+    /* scale value font depending on number of fields */
+    #fieldReadouts, #topReadouts { --field-count: 1; }
+    .fieldItem .value { line-height:1; }
+    /* Top readouts (horizontal) */
+    #topReadouts { display:flex; gap:8px; width:100%; align-items:stretch; overflow:auto; padding:6px 0; }
+    #topReadouts .fieldItem { flex: 1 1 auto; min-width:120px; height:80px; margin:0 4px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
+    #topReadouts .fieldItem .value { font-size: clamp(18px, 3.5vw, 48px); }
     .fieldItem .value { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
     #readout {
@@ -76,8 +80,8 @@
 </head>
 
 <body>
-  <h2>Live tir au banc — auto (HELLO/DATA) robuste</h2>
-
+  <h2>Live data ESP32-C3 Simonnot</h2>
+  <div id="status">Statut: <b>déconnecté</b></div>
   <div id="fatal"></div>
 
   <div class="row">
@@ -89,35 +93,18 @@
 
     <span class="pill">Schema: <b id="schemaState">—</b></span>
     <span class="pill">Points: <b id="ptCount">0</b></span>
-  </div>
 
-  <div class="row">
-    <label>Update graph (Hz):
-      <input id="uiHz" type="number" value="12" min="1" max="60">
-    </label>
-
-    <label>Fenêtre affichée (s):
-      <input id="winS" type="range" min="5" max="60" value="15" step="1">
-      <span id="winSVal">15</span>
-    </label>
-
-    <label>Scroll (0 = passé, 100 = présent):
-      <input id="scroll" type="range" min="0" max="1000" value="1000" step="1">
-      <span id="scrollVal">100%</span>
-    </label>
-
-    <button id="btnLive" class="pill">Suivre live</button>
-  </div>
-
-  <div id="status">Statut: <b>déconnecté</b></div>
-  <div>Dernière trame: <span id="last">—</span></div>
-
-  <div class="row">
     <button id="btnFull" class="pill">Plein écran</button>
     <button id="btnShowLog" class="pill">Serial log</button>
-    <button id="btnRebuild" class="pill">Rebuild chart</button>
     <button id="btnClearLog" class="pill">Clear log</button>
     <label style="margin-left:8px"><input id="autoScroll" type="checkbox" checked> Auto-scroll</label>
+  </div>
+
+  <!-- topReadouts will be rendered here -->
+  <div id="topReadouts"></div>
+
+  <div class="row">
+    
   </div>
 
   <div id="main">
@@ -126,26 +113,41 @@
         <canvas id="chart"></canvas>
         <div id="readout"></div>
       </div>
-    </div>
-    <aside id="sidePane">
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <strong>Données récentes</strong>
-        <span class="muted">Dernière valeur reçue</span>
+      <div class="row">
+        <label>Update graph (Hz):
+          <input id="uiHz" type="number" value="12" min="1" max="60">
+        </label>
+
+        <label>Fenêtre affichée (s):
+          <input id="winS" type="range" min="5" max="60" value="15" step="1">
+          <span id="winSVal">15</span>
+        </label>
+
+        <label>Scroll (0 = passé, 100 = présent):
+          <input id="scroll" type="range" min="0" max="1000" value="1000" step="1">
+          <span id="scrollVal">100%</span>
+        </label>
+
+        <button id="btnLive" class="pill">Suivre live</button>
       </div>
-      <div id="fieldReadouts" style="height:100%; display:flex; flex-direction:column;"></div>
-    </aside>
+    </div>
   </div>
 
 <script>
-  // ====== Si Chart.js n'est pas chargé (pas d'internet / CDN bloqué) ======
-  const fatalEl = document.getElementById("fatal");
-  if (typeof Chart === "undefined") {
-    fatalEl.style.display = "block";
-    fatalEl.innerHTML =
-      "<b>Chart.js n'est pas chargé.</b><br>" +
-      "Cause probable : pas d'internet ou CDN bloqué.<br>" +
-      "Solution : télécharge <code>chart.umd.min.js</code> et référence-le en local (dans le même dossier que cette page).";
-  }
+  // Global error handlers to surface runtime issues on the page
+  window.addEventListener('error', function (ev) {
+    try {
+      const msg = (ev && ev.message) ? ev.message : String(ev);
+      const where = (ev && ev.filename) ? `${ev.filename}:${ev.lineno}` : '';
+      const text = `JS Error: ${msg} ${where}`;
+      console.error(text, ev.error || ev);
+      try { document.getElementById('fatal').style.display = 'block'; document.getElementById('fatal').textContent = text; } catch (e) {}
+      try { if (typeof appendLog === 'function') appendLog(text); } catch (e) {}
+    } catch (e) { console.error('error handler failed', e); }
+  });
+  window.addEventListener('unhandledrejection', function(ev){
+    try { const r = ev && ev.reason ? ev.reason : ev; if (typeof appendLog === 'function') appendLog('UnhandledRejection: '+String(r)); document.getElementById('fatal').style.display='block'; document.getElementById('fatal').textContent='UnhandledRejection: '+String(r); } catch(e){console.error(e);} 
+  });
 
   // ====== NUS UUID ======
   const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
@@ -176,7 +178,7 @@
   const btnClearLog = document.getElementById("btnClearLog");
   const autoScrollEl = document.getElementById("autoScroll");
   const btnFull = document.getElementById("btnFull");
-  const fieldReadoutsEl = document.getElementById("fieldReadouts");
+  const fieldReadoutsEl = document.getElementById("topReadouts") || document.getElementById("fieldReadouts");
 
   // create overlay panel for serial log (tab)
   const logOverlay = document.createElement('div');
@@ -207,9 +209,9 @@
     // set css var for font scaling
     fieldReadoutsEl.style.setProperty('--field-count', String(fields.length || 1));
     fieldConfigs = fields.map(() => ({ mode: 'dynamic', min: null, max: null, precision: 3 }));
-    // try to load saved configs from localStorage and merge
+    // try to load saved configs from storage and merge
     try {
-      const saved = loadFieldConfigs();
+      const saved = loadFieldConfigsFromStorage();
       if (Array.isArray(saved)) {
         for (let i = 0; i < Math.min(saved.length, fieldConfigs.length); i++) {
           const s = saved[i];
@@ -223,7 +225,7 @@
       const f = fields[i];
       const div = document.createElement('div');
       div.className = 'fieldItem';
-      div.innerHTML = `<div class="label">${f.label || f.key || ('S'+(i+1))}</div><div class="value"><span id="fieldVal${i}">—</span><span class="unit" id="fieldUnit${i}">${f.unit ? f.unit : ''}</span></div><button class="gear" data-idx="${i}">⚙</button>`;
+      div.innerHTML = `<div class="label">${f.label || f.key || ('S'+(i+1))}</div><div class="value" id="fieldVal${i}">—${f.unit ? ' '+f.unit : ''}</div><button class="gear" data-idx="${i}">⚙</button>`;
       fieldReadoutsEl.appendChild(div);
     }
     // attach gear handlers
@@ -232,7 +234,7 @@
       const idx = Number(ev.currentTarget.getAttribute('data-idx'));
       openFieldMenu(idx, ev.currentTarget);
     }));
-    // apply loaded configs to chart (per-axis)
+    // apply loaded configs to chart
     try { for (let i = 0; i < fieldConfigs.length; i++) applyFieldConfig(i); } catch (e) { console.error('applyFieldConfig error', e); }
   }
 
@@ -240,159 +242,27 @@
     if (!fieldReadoutsEl || !schema) return;
     for (let i = 0; i < (schema.fields?.length || 0); i++) {
       const el = document.getElementById('fieldVal'+i);
-      const elUnit = document.getElementById('fieldUnit'+i);
       const v = values?.[i];
       const prec = (fieldConfigs?.[i]?.precision != null) ? fieldConfigs[i].precision : 3;
-      const txt = Number.isFinite(v) ? Number(v).toFixed(prec) : '—';
+      const txt = Number.isFinite(v) ? (Number(v).toFixed(prec) + (schema.fields[i].unit ? ' ' + schema.fields[i].unit : '')) : '—';
       if (el) el.textContent = txt;
-      if (elUnit) elUnit.textContent = schema.fields[i].unit ? schema.fields[i].unit : '';
       latestReadings[i] = Number.isFinite(v) ? v : NaN;
     }
   }
 
-  // Persist fieldConfigs using localStorage (works with file://)
-  function saveFieldConfigs() {
-    try { localStorage.setItem('serial_fieldCfg', JSON.stringify(fieldConfigs || [])); } catch (e) { console.warn('saveFieldConfigs', e); }
-  }
-
-  function loadFieldConfigs() {
-    try { const s = localStorage.getItem('serial_fieldCfg'); return s ? JSON.parse(s) : null; } catch (e) { console.warn('loadFieldConfigs', e); return null; }
-  }
-
-  function clearFieldConfigs() { try { localStorage.removeItem('serial_fieldCfg'); } catch (e) {} }
-
-  // compute global Y limits from any static-configured fields and apply to chart
-  function updateGlobalYAxisLimits() {
-    // Avoid re-entrant calls and heavy synchronous updates; debounce chart.update
+  // Persistence helpers (use localStorage to work with file:// and avoid cookie issues)
+  function saveFieldConfigsToStorage() {
     try {
-      if (!chart) return;
-      if (updateGlobalYAxisLimits._running) return;
-      updateGlobalYAxisLimits._running = true;
-
-      const mins = [];
-      const maxs = [];
-      for (let i = 0; i < (fieldConfigs?.length || 0); i++) {
-        const c = fieldConfigs[i];
-        if (c && c.mode === 'static') {
-          if (Number.isFinite(c.min)) mins.push(c.min);
-          if (Number.isFinite(c.max)) maxs.push(c.max);
-        }
-      }
-
-      // Modify only numeric min/max on the global 'y' scale to avoid passing unexpected types to Chart.js
-      chart.options = chart.options || {};
-      chart.options.scales = chart.options.scales || {};
-      // ensure y scale is a plain object
-      if (!chart.options.scales.y || typeof chart.options.scales.y !== 'object') chart.options.scales.y = {};
-
-      if (mins.length || maxs.length) {
-        const gmin = mins.length ? Math.min(...mins) : undefined;
-        const gmax = maxs.length ? Math.max(...maxs) : undefined;
-        if (gmin !== undefined) chart.options.scales.y.min = gmin; else delete chart.options.scales.y.min;
-        if (gmax !== undefined) chart.options.scales.y.max = gmax; else delete chart.options.scales.y.max;
-      } else {
-        // clear global limits -> autoscale
-        delete chart.options.scales.y.min;
-        delete chart.options.scales.y.max;
-      }
-
-      // debounce update to break potential call stacks
-      if (updateGlobalYAxisLimits._timer) clearTimeout(updateGlobalYAxisLimits._timer);
-      updateGlobalYAxisLimits._timer = setTimeout(() => {
-        try { chart.update('none'); }
-        catch (e) { console.error('chart update failed in updateGlobalYAxisLimits', e); try { rebuildChartSoft(); } catch (e2) {} }
-        updateGlobalYAxisLimits._running = false;
-      }, 20);
-    } catch (e) { console.error('updateGlobalYAxisLimits', e); updateGlobalYAxisLimits._running = false; }
+      localStorage.setItem('serial_fieldCfg', JSON.stringify(fieldConfigs || []));
+    } catch (e) { console.warn('saveFieldConfigsToStorage', e); }
   }
 
-  // attempt to rebuild chart preserving datasets and options
-  function rebuildChartSoft() {
+  function loadFieldConfigsFromStorage() {
     try {
-      const existingDatasets = (chart && chart.data && chart.data.datasets) ? chart.data.datasets.map(d => ({
-        label: d.label != null ? String(d.label) : '',
-        data: Array.isArray(d.data) ? d.data.slice() : [],
-        tension: d.tension, pointRadius: d.pointRadius, borderWidth: d.borderWidth, yAxisID: d.yAxisID != null ? String(d.yAxisID) : undefined
-      })) : [];
-
-      // build safe options from defaults, and create per-dataset axes
-      let opts = JSON.parse(JSON.stringify(defaultChartOptions));
-      opts.scales = opts.scales || {};
-      // ensure we have y axes for each dataset
-      const n = existingDatasets.length || (schema?.fields?.length || 0);
-      for (let i = 0; i < n; i++) {
-        const axisId = 'y' + i;
-        opts.scales[axisId] = opts.scales[axisId] || {};
-        opts.scales[axisId].type = 'linear';
-        opts.scales[axisId].position = (i % 2 === 0) ? 'left' : 'right';
-        opts.scales[axisId].display = true;
-        // if we have a saved static min/max, apply it
-        const cfg = fieldConfigs[i];
-        if (cfg && cfg.mode === 'static') {
-          if (Number.isFinite(cfg.min)) opts.scales[axisId].min = cfg.min;
-          if (Number.isFinite(cfg.max)) opts.scales[axisId].max = cfg.max;
-        }
-        // title text from schema unit if available
-        const unit = schema?.fields?.[i]?.unit || '';
-        opts.scales[axisId].title = { display: !!unit, text: unit };
-      }
-
-      // destroy old chart
-      try { if (chart) chart.destroy(); } catch (e) {}
-
-      // recreate chart with sanitized options
-      initChartFrom(existingDatasets, opts);
-      try { sanitizeChartOptions(); chart.update('none'); } catch (e) { console.error('chart.update failed after rebuild', e); }
-    } catch (e) { console.error('rebuildChartSoft failed', e); }
-  }
-
-  // Ensure chart.options contains only expected primitive types for Chart.js (avoid functions/objects where strings expected)
-  function sanitizeChartOptions() {
-    try {
-      if (!chart || !chart.options) return;
-      // sanitize interaction.mode
-      if (chart.options.interaction && chart.options.interaction.mode && typeof chart.options.interaction.mode !== 'string') {
-        chart.options.interaction.mode = String(chart.options.interaction.mode || 'nearest');
-      }
-      const scales = chart.options.scales || {};
-      for (const k of Object.keys(scales)) {
-        const ax = scales[k] || {};
-        // ensure type is string
-        if (ax.type && typeof ax.type !== 'string') ax.type = String(ax.type);
-        // ensure position
-        if (ax.position && typeof ax.position !== 'string') ax.position = String(ax.position);
-        // ensure title exists and text is string or undefined
-        if (!ax.title || typeof ax.title !== 'object') ax.title = { display: false };
-        if (ax.title.text != null && typeof ax.title.text !== 'string') {
-          try { ax.title.text = String(ax.title.text); } catch (e) { ax.title.text = '' + (ax.title.text || ''); }
-        }
-        // write back sanitized axis
-        chart.options.scales[k] = ax;
-      }
-      // sanitize dataset labels and yAxisID
-      if (Array.isArray(chart.data && chart.data.datasets)) {
-        for (let i = 0; i < chart.data.datasets.length; i++) {
-          const ds = chart.data.datasets[i] || {};
-          if (ds.label != null && typeof ds.label !== 'string') {
-            try { ds.label = String(ds.label); } catch (e) { ds.label = '' + (ds.label || ''); }
-          }
-          if (ds.yAxisID != null && typeof ds.yAxisID !== 'string') {
-            try { ds.yAxisID = String(ds.yAxisID); } catch (e) { ds.yAxisID = '' + (ds.yAxisID || ''); }
-          }
-          // ensure data points are arrays of plain objects with numeric x,y or _t
-          if (Array.isArray(ds.data)) {
-            for (let j = 0; j < ds.data.length; j++) {
-              const p = ds.data[j];
-              if (p && typeof p === 'object') {
-                if (p.x != null && typeof p.x !== 'number') p.x = Number(p.x);
-                if (p.y != null && typeof p.y !== 'number') p.y = Number(p.y);
-                if (p._t != null && typeof p._t !== 'number') p._t = Number(p._t);
-              }
-            }
-          }
-        }
-      }
-    } catch (e) { console.error('sanitizeChartOptions error', e); }
+      const s = localStorage.getItem('serial_fieldCfg');
+      if (!s) return null;
+      return JSON.parse(s);
+    } catch (e) { console.warn('loadFieldConfigsFromStorage', e); return null; }
   }
 
   function applyFieldConfig(i) {
@@ -405,30 +275,26 @@
       chart.options.scales = chart.options.scales || {};
 
       if (cfg.mode !== 'static') {
-        // reset dataset to default shared y axis
+        // reset dataset to default y axis
         if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = 'y';
-        // delete custom axis if exists
+        // delete axis if exists
         if (chart.options.scales && chart.options.scales[axisId]) {
           try { delete chart.options.scales[axisId]; } catch (e) { console.warn('cannot delete axis', axisId, e); }
         }
-        // ensure a shared 'y' axis exists as a plain object
-        chart.options.scales.y = chart.options.scales.y || { type: 'linear', display: true, title: { display: false, text: '' } };
       } else {
-        // create/override axis for this series with a fresh plain object (avoid Object.assign with runtime objects)
-        const unit = schema?.fields?.[i]?.unit || '';
-        chart.options.scales[axisId] = {
+        // create/override axis for this series with static min/max
+        chart.options.scales[axisId] = Object.assign({}, chart.options.scales[axisId] || {}, {
           type: 'linear',
           position: (i % 2 === 0) ? 'left' : 'right',
           display: true,
-          min: (cfg.min != null && Number.isFinite(cfg.min)) ? cfg.min : undefined,
-          max: (cfg.max != null && Number.isFinite(cfg.max)) ? cfg.max : undefined,
-          title: { display: !!unit, text: unit }
-        };
+          min: (cfg.min != null) ? cfg.min : undefined,
+          max: (cfg.max != null) ? cfg.max : undefined
+        });
         if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = axisId;
       }
 
       // try updating chart safely
-      try { sanitizeChartOptions(); chart.update('none'); } catch (e) { console.error('chart update failed in applyFieldConfig', e); try { rebuildChartSoft(); } catch (e2) {} }
+      try { chart.update('none'); } catch (e) { console.error('chart update failed in applyFieldConfig', e); }
     } catch (e) { console.error('applyFieldConfig error', e); }
   }
 
@@ -436,8 +302,6 @@
 
   btnShowLog.addEventListener('click', () => { logOverlay.style.display = 'block'; });
   closeLogOverlay.addEventListener('click', () => { logOverlay.style.display = 'none'; });
-  const btnRebuild = document.getElementById('btnRebuild');
-  btnRebuild.addEventListener('click', () => { try { rebuildChartSoft(); } catch (e) { console.error(e); } });
 
   // field menu (reused popover)
   const fieldMenu = document.createElement('div');
@@ -510,9 +374,8 @@
     const max = fmMax.value === '' ? null : Number(fmMax.value);
     const precision = Math.max(0, Math.min(6, parseInt(fmPrec.value || '3',10)));
     fieldConfigs[idx] = { mode, min, max, precision };
-    // apply and persist
-    try { applyFieldConfig(idx); } catch (e) { console.error(e); }
-    try { saveFieldConfigs(); } catch (e) { console.warn(e); }
+    applyFieldConfig(idx);
+    try { saveFieldConfigsToStorage(); } catch (e) {}
     updateFieldReadouts(latestReadings);
     closeFieldMenu();
   });
@@ -571,48 +434,24 @@
 
   // ====== Chart init ======
   const canvasCtx = document.getElementById("chart");
-  let chart = null;
-
-  const defaultChartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    parsing: false,
-    normalized: true,
-    interaction: { mode: "nearest", intersect: false, axis: "x" },
-    plugins: { legend: { display: true }, tooltip: { enabled: false } },
-    scales: {
-      x: { type: "linear", title: { display: true, text: "Temps relatif (s) — 0 = maintenant" } },
-      y: { title: { display: true, text: "Valeurs" } }
-    }
-  };
-
-  function initChartFrom(existingDatasets, optionsOverride) {
-    if (typeof Chart === 'undefined') return null;
-    const opts = optionsOverride ? optionsOverride : JSON.parse(JSON.stringify(defaultChartOptions));
-    try {
-      chart = new Chart(canvasCtx, { type: 'line', data: { datasets: existingDatasets || [] }, options: opts, plugins: [crosshairPlugin] });
-      chart._activeCrosshair = null;
-      attachChartMouseHandlers();
-      return chart;
-    } catch (e) {
-      console.error('initChartFrom error', e);
-      return null;
-    }
-  }
-
-  function attachChartMouseHandlers() {
-    if (!chart || !chart.canvas) return;
-    chart.canvas.addEventListener("mousemove", updateCrosshairAndReadout);
-    chart.canvas.addEventListener("mouseleave", () => {
-      chart._activeCrosshair = null;
-      readoutEl.style.display = "none";
-      try { chart.draw(); } catch (e) {}
-    });
-  }
-
-  // create initial chart
-  initChartFrom([], defaultChartOptions);
+  const chart = (typeof Chart !== "undefined") ? new Chart(canvasCtx, {
+    type: "line",
+    data: { datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      parsing: false,
+      normalized: true,
+      interaction: { mode: "nearest", intersect: false, axis: "x" },
+      plugins: { legend: { display: true }, tooltip: { enabled: false } },
+      scales: {
+        x: { type: "linear", title: { display: true, text: "Temps relatif (s) — 0 = maintenant" } },
+        y: { title: { display: true, text: "Valeurs" } }
+      }
+    },
+    plugins: [crosshairPlugin]
+  }) : null;
 
   function setSchema(hello) {
     // normalize fields: accept objects or arrays [key,label,unit]
@@ -639,25 +478,6 @@
       data: [], tension: 0.15, pointRadius: 0, borderWidth: 2
     }));
 
-    // create one Y axis per dataset (y0, y1, ...), assign each dataset to its axis
-    chart.options = chart.options || {};
-    // Build a fresh scales object with only plain primitives to avoid retaining Chart.js runtime/scriptable objects
-    const newScales = Object.create(null);
-    // keep a simple x scale (text preserved from default semantics)
-    newScales.x = { type: 'linear', title: { display: true, text: 'Temps relatif (s) — 0 = maintenant' } };
-    for (let i = 0; i < (schema.fields || []).length; i++) {
-      const axisId = 'y' + i;
-      const unit = schema.fields[i].unit || '';
-      newScales[axisId] = {
-        type: 'linear',
-        position: (i % 2 === 0) ? 'left' : 'right',
-        display: true,
-        title: { display: !!unit, text: unit }
-      };
-      if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = axisId;
-    }
-    chart.options.scales = newScales;
-
     // reset buffers/timeline
     latestTs = null;
     pending.length = 0;
@@ -669,7 +489,7 @@
     // render right-side field readouts
     try { renderFieldReadouts(schema.fields || []); } catch (e) {}
 
-    try { sanitizeChartOptions(); chart.update("none"); } catch (e) { console.error('chart.update failed in setSchema', e); try { rebuildChartSoft(); } catch (e2) {} }
+    chart.update("none");
   }
 
   // Auto schema si HELLO absent : crée S1..Sn à partir du nombre de colonnes
@@ -833,7 +653,7 @@
     rebuildRelativeX();
     applyXWindow();
     updateSlidersText();
-    try { sanitizeChartOptions(); chart.update("none"); } catch (e) { console.error('chart.update failed in flushPendingToChart', e); try { rebuildChartSoft(); } catch (e2) {} }
+    chart.update("none");
   }
 
   startUiTimer();
@@ -846,7 +666,6 @@
   let rxBuffer = "";
 
   function handleLine(line) {
-    lastEl.textContent = line;
 
     // HELLO {...}  — accepter aussi 'HELLO{...}' (sans espace)
     if (line.startsWith("HELLO")) {
