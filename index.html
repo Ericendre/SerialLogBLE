@@ -3,149 +3,977 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ESP32C3 Live MAX31855</title>
+  <title>Banc - BLE Plot Auto robuste (HELLO/DATA)</title>
+
+  <!-- Si pas d'internet, Chart.js CDN peut ne pas charger.
+       Dans ce cas, télécharge chart.umd.min.js et remplace par: <script src="./chart.umd.min.js"></script> -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
   <style>
     body { font-family: system-ui, sans-serif; margin: 16px; }
-    button { padding: 10px 14px; margin-right: 8px; }
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; }
+    button { padding: 10px 14px; }
     #status { margin: 10px 0; }
     #last { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    canvas { max-width: 100%; }
+    .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: 8px 0; }
+    input[type="number"] { width: 110px; }
+    input[type="range"] { width: 240px; }
+    label { display:flex; align-items:center; gap:8px; }
+    .pill { padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px; }
+    .muted { opacity: .75; }
+    #chartWrap { height: 440px; width: 100%; max-width: 1300px; position: relative; }
+    canvas { display:block; width:100% !important; height:100% !important; }
+
+    /* Main layout: chart + right sidebar */
+    #main { display: flex; gap: 12px; align-items: stretch; height: calc(100vh - 260px); }
+    #chartPane { flex: 1 1 auto; min-width: 200px; }
+    #chartWrap { height: 100%; max-width: none; }
+    #sidePane { width: 360px; background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 8px; box-sizing: border-box; overflow: hidden; }
+    #fieldReadouts { height: 100%; }
+    .fieldItem { display:flex; flex-direction:column; justify-content:center; align-items:center; padding:8px; border-radius:6px; background:#fff; margin:0; box-shadow: 0 1px 2px rgba(0,0,0,0.03); border-bottom:1px solid #f3f3f3; flex: 1 1 auto; overflow: hidden; }
+    .fieldItem .label { font-weight:700; font-size:0.9rem; margin-bottom:6px; color:#333; }
+    .fieldItem .value { font-variant-numeric: tabular-nums; font-weight:700; color:#111; display:flex; align-items:baseline; gap:6px; }
+    .fieldItem .unit { font-size:0.55em; opacity:0.75; color:#444; }
+    .fieldItem { position:relative; }
+    .fieldItem .gear { position:absolute; top:6px; right:6px; display:none; border:1px solid #ddd; background:#fff; padding:4px 6px; border-radius:6px; cursor:pointer; }
+    .fieldItem:hover .gear { display:block; }
+    /* scale value font depending on number of fields and available height */
+    #fieldReadouts { --field-count: 1; }
+    .fieldItem .value { font-size: calc((100vh - 260px) / var(--field-count) * 0.45); line-height:1; }
+    .fieldItem .value { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    #readout {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(255,255,255,.92);
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 10px 12px;
+      min-width: 240px;
+      font-size: 13px;
+      line-height: 1.4;
+      pointer-events: none;
+      box-shadow: 0 6px 18px rgba(0,0,0,.08);
+      display: none;
+    }
+    #readout .t { font-weight: 700; margin-bottom: 6px; }
+    #readout .k { opacity: .8; }
+    #readout .rowv { display:flex; justify-content: space-between; gap: 12px; }
+    #readout .v { font-variant-numeric: tabular-nums; }
+
+    #fatal {
+      padding: 12px;
+      border: 1px solid #f1c;
+      background: rgba(255,0,180,.08);
+      border-radius: 10px;
+      display: none;
+      margin: 10px 0;
+      max-width: 900px;
+    }
   </style>
 </head>
+
 <body>
-  <h2>Live MAX31855 (BLE NUS)</h2>
-  <div>
+  <h2>Live tir au banc — auto (HELLO/DATA) robuste</h2>
+
+  <div id="fatal"></div>
+
+  <div class="row">
     <button id="btnConnect">Connecter</button>
     <button id="btnDisconnect" disabled>Déconnecter</button>
-    <label style="margin-left:10px;">
-      Fenêtre (points):
-      <input id="win" type="number" value="200" min="20" max="5000" style="width:90px;">
-    </label>
+
+    <button id="btnPause" disabled>Pause affichage</button>
+    <span class="pill">Affichage: <b id="plotState">LIVE</b></span>
+
+    <span class="pill">Schema: <b id="schemaState">—</b></span>
+    <span class="pill">Points: <b id="ptCount">0</b></span>
   </div>
+
+  <div class="row">
+    <label>Update graph (Hz):
+      <input id="uiHz" type="number" value="12" min="1" max="60">
+    </label>
+
+    <label>Fenêtre affichée (s):
+      <input id="winS" type="range" min="5" max="60" value="15" step="1">
+      <span id="winSVal">15</span>
+    </label>
+
+    <label>Scroll (0 = passé, 100 = présent):
+      <input id="scroll" type="range" min="0" max="1000" value="1000" step="1">
+      <span id="scrollVal">100%</span>
+    </label>
+
+    <button id="btnLive" class="pill">Suivre live</button>
+  </div>
+
   <div id="status">Statut: <b>déconnecté</b></div>
   <div>Dernière trame: <span id="last">—</span></div>
 
-  <canvas id="chart" height="120"></canvas>
+  <div class="row">
+    <button id="btnFull" class="pill">Plein écran</button>
+    <button id="btnShowLog" class="pill">Serial log</button>
+    <button id="btnRebuild" class="pill">Rebuild chart</button>
+    <button id="btnClearLog" class="pill">Clear log</button>
+    <label style="margin-left:8px"><input id="autoScroll" type="checkbox" checked> Auto-scroll</label>
+  </div>
+
+  <div id="main">
+    <div id="chartPane">
+      <div id="chartWrap">
+        <canvas id="chart"></canvas>
+        <div id="readout"></div>
+      </div>
+    </div>
+    <aside id="sidePane">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <strong>Données récentes</strong>
+        <span class="muted">Dernière valeur reçue</span>
+      </div>
+      <div id="fieldReadouts" style="height:100%; display:flex; flex-direction:column;"></div>
+    </aside>
+  </div>
 
 <script>
-const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-const TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // notify (ESP->web)
+  // ====== Si Chart.js n'est pas chargé (pas d'internet / CDN bloqué) ======
+  const fatalEl = document.getElementById("fatal");
+  if (typeof Chart === "undefined") {
+    fatalEl.style.display = "block";
+    fatalEl.innerHTML =
+      "<b>Chart.js n'est pas chargé.</b><br>" +
+      "Cause probable : pas d'internet ou CDN bloqué.<br>" +
+      "Solution : télécharge <code>chart.umd.min.js</code> et référence-le en local (dans le même dossier que cette page).";
+  }
 
-let device, server, service, txChar;
-let decoder = new TextDecoder("utf-8");
-let rxBuffer = "";
+  // ====== NUS UUID ======
+  const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+  const TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
-const statusEl = document.getElementById("status");
-const lastEl = document.getElementById("last");
-const btnConnect = document.getElementById("btnConnect");
-const btnDisconnect = document.getElementById("btnDisconnect");
-const winEl = document.getElementById("win");
+  const KEEP_S = 60;
 
-const ctx = document.getElementById("chart");
-const chart = new Chart(ctx, {
-  type: "line",
-  data: {
-    labels: [],
-    datasets: [
-      { label: "Thermocouple (°C)", data: [], tension: 0.15 },
-      { label: "Interne (°C)", data: [], tension: 0.15 },
-    ],
-  },
-  options: {
+  // ====== UI refs ======
+  const statusEl = document.getElementById("status");
+  const lastEl = document.getElementById("last");
+  const btnConnect = document.getElementById("btnConnect");
+  const btnDisconnect = document.getElementById("btnDisconnect");
+
+  const btnPause = document.getElementById("btnPause");
+  const plotStateEl = document.getElementById("plotState");
+  const ptCountEl = document.getElementById("ptCount");
+  const schemaStateEl = document.getElementById("schemaState");
+
+  const uiHzEl = document.getElementById("uiHz");
+  const winSEl = document.getElementById("winS");
+  const winSValEl = document.getElementById("winSVal");
+  const scrollEl = document.getElementById("scroll");
+  const scrollValEl = document.getElementById("scrollVal");
+  const btnLive = document.getElementById("btnLive");
+  const readoutEl = document.getElementById("readout");
+  // Serial log UI (overlay) + right sidebar readouts
+  const btnShowLog = document.getElementById("btnShowLog");
+  const btnClearLog = document.getElementById("btnClearLog");
+  const autoScrollEl = document.getElementById("autoScroll");
+  const btnFull = document.getElementById("btnFull");
+  const fieldReadoutsEl = document.getElementById("fieldReadouts");
+
+  // create overlay panel for serial log (tab)
+  const logOverlay = document.createElement('div');
+  logOverlay.id = 'logOverlay';
+  logOverlay.style.cssText = 'position:fixed; left:10%; top:10%; width:80%; height:80%; background:rgba(255,255,255,0.98); border:1px solid #ddd; border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,0.2); display:none; z-index:9999; padding:10px; box-sizing:border-box; overflow:auto;';
+  logOverlay.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Serial log</strong><div><button id="closeLogOverlay" class="pill">Fermer</button></div></div><pre id="serialLog" style="height:calc(100% - 40px); margin:0; padding:8px; border-radius:6px; background:#fefefe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow:auto;"></pre>';
+  document.body.appendChild(logOverlay);
+  const serialLogEl = document.getElementById('serialLog');
+  const closeLogOverlay = document.getElementById('closeLogOverlay');
+
+  let serialLines = [];
+  const LOG_MAX = 2000;
+  let latestReadings = [];
+  let fieldConfigs = [];
+
+  function appendLog(line) {
+    if (!line) return;
+    serialLines.push(line);
+    if (serialLines.length > LOG_MAX) serialLines.splice(0, serialLines.length - LOG_MAX);
+    serialLogEl.textContent = serialLines.join("\n");
+    if (autoScrollEl && autoScrollEl.checked) serialLogEl.scrollTop = serialLogEl.scrollHeight;
+  }
+
+  function renderFieldReadouts(fields) {
+    if (!fieldReadoutsEl) return;
+    fieldReadoutsEl.innerHTML = "";
+    latestReadings = fields.map(() => NaN);
+    // set css var for font scaling
+    fieldReadoutsEl.style.setProperty('--field-count', String(fields.length || 1));
+    fieldConfigs = fields.map(() => ({ mode: 'dynamic', min: null, max: null, precision: 3 }));
+    // try to load saved configs from localStorage and merge
+    try {
+      const saved = loadFieldConfigs();
+      if (Array.isArray(saved)) {
+        for (let i = 0; i < Math.min(saved.length, fieldConfigs.length); i++) {
+          const s = saved[i];
+          if (s && typeof s === 'object') {
+            fieldConfigs[i] = Object.assign(fieldConfigs[i], s);
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const div = document.createElement('div');
+      div.className = 'fieldItem';
+      div.innerHTML = `<div class="label">${f.label || f.key || ('S'+(i+1))}</div><div class="value"><span id="fieldVal${i}">—</span><span class="unit" id="fieldUnit${i}">${f.unit ? f.unit : ''}</span></div><button class="gear" data-idx="${i}">⚙</button>`;
+      fieldReadoutsEl.appendChild(div);
+    }
+    // attach gear handlers
+    const gears = fieldReadoutsEl.querySelectorAll('.gear');
+    gears.forEach(g => g.addEventListener('click', (ev) => {
+      const idx = Number(ev.currentTarget.getAttribute('data-idx'));
+      openFieldMenu(idx, ev.currentTarget);
+    }));
+    // apply loaded configs to chart (per-axis)
+    try { for (let i = 0; i < fieldConfigs.length; i++) applyFieldConfig(i); } catch (e) { console.error('applyFieldConfig error', e); }
+  }
+
+  function updateFieldReadouts(values) {
+    if (!fieldReadoutsEl || !schema) return;
+    for (let i = 0; i < (schema.fields?.length || 0); i++) {
+      const el = document.getElementById('fieldVal'+i);
+      const elUnit = document.getElementById('fieldUnit'+i);
+      const v = values?.[i];
+      const prec = (fieldConfigs?.[i]?.precision != null) ? fieldConfigs[i].precision : 3;
+      const txt = Number.isFinite(v) ? Number(v).toFixed(prec) : '—';
+      if (el) el.textContent = txt;
+      if (elUnit) elUnit.textContent = schema.fields[i].unit ? schema.fields[i].unit : '';
+      latestReadings[i] = Number.isFinite(v) ? v : NaN;
+    }
+  }
+
+  // Persist fieldConfigs using localStorage (works with file://)
+  function saveFieldConfigs() {
+    try { localStorage.setItem('serial_fieldCfg', JSON.stringify(fieldConfigs || [])); } catch (e) { console.warn('saveFieldConfigs', e); }
+  }
+
+  function loadFieldConfigs() {
+    try { const s = localStorage.getItem('serial_fieldCfg'); return s ? JSON.parse(s) : null; } catch (e) { console.warn('loadFieldConfigs', e); return null; }
+  }
+
+  function clearFieldConfigs() { try { localStorage.removeItem('serial_fieldCfg'); } catch (e) {} }
+
+  // compute global Y limits from any static-configured fields and apply to chart
+  function updateGlobalYAxisLimits() {
+    // Avoid re-entrant calls and heavy synchronous updates; debounce chart.update
+    try {
+      if (!chart) return;
+      if (updateGlobalYAxisLimits._running) return;
+      updateGlobalYAxisLimits._running = true;
+
+      const mins = [];
+      const maxs = [];
+      for (let i = 0; i < (fieldConfigs?.length || 0); i++) {
+        const c = fieldConfigs[i];
+        if (c && c.mode === 'static') {
+          if (Number.isFinite(c.min)) mins.push(c.min);
+          if (Number.isFinite(c.max)) maxs.push(c.max);
+        }
+      }
+
+      // Modify only numeric min/max on the global 'y' scale to avoid passing unexpected types to Chart.js
+      chart.options = chart.options || {};
+      chart.options.scales = chart.options.scales || {};
+      // ensure y scale is a plain object
+      if (!chart.options.scales.y || typeof chart.options.scales.y !== 'object') chart.options.scales.y = {};
+
+      if (mins.length || maxs.length) {
+        const gmin = mins.length ? Math.min(...mins) : undefined;
+        const gmax = maxs.length ? Math.max(...maxs) : undefined;
+        if (gmin !== undefined) chart.options.scales.y.min = gmin; else delete chart.options.scales.y.min;
+        if (gmax !== undefined) chart.options.scales.y.max = gmax; else delete chart.options.scales.y.max;
+      } else {
+        // clear global limits -> autoscale
+        delete chart.options.scales.y.min;
+        delete chart.options.scales.y.max;
+      }
+
+      // debounce update to break potential call stacks
+      if (updateGlobalYAxisLimits._timer) clearTimeout(updateGlobalYAxisLimits._timer);
+      updateGlobalYAxisLimits._timer = setTimeout(() => {
+        try { chart.update('none'); }
+        catch (e) { console.error('chart update failed in updateGlobalYAxisLimits', e); try { rebuildChartSoft(); } catch (e2) {} }
+        updateGlobalYAxisLimits._running = false;
+      }, 20);
+    } catch (e) { console.error('updateGlobalYAxisLimits', e); updateGlobalYAxisLimits._running = false; }
+  }
+
+  // attempt to rebuild chart preserving datasets and options
+  function rebuildChartSoft() {
+    try {
+      const existingDatasets = (chart && chart.data && chart.data.datasets) ? chart.data.datasets.map(d => ({
+        label: d.label != null ? String(d.label) : '',
+        data: Array.isArray(d.data) ? d.data.slice() : [],
+        tension: d.tension, pointRadius: d.pointRadius, borderWidth: d.borderWidth, yAxisID: d.yAxisID != null ? String(d.yAxisID) : undefined
+      })) : [];
+
+      // build safe options from defaults, and create per-dataset axes
+      let opts = JSON.parse(JSON.stringify(defaultChartOptions));
+      opts.scales = opts.scales || {};
+      // ensure we have y axes for each dataset
+      const n = existingDatasets.length || (schema?.fields?.length || 0);
+      for (let i = 0; i < n; i++) {
+        const axisId = 'y' + i;
+        opts.scales[axisId] = opts.scales[axisId] || {};
+        opts.scales[axisId].type = 'linear';
+        opts.scales[axisId].position = (i % 2 === 0) ? 'left' : 'right';
+        opts.scales[axisId].display = true;
+        // if we have a saved static min/max, apply it
+        const cfg = fieldConfigs[i];
+        if (cfg && cfg.mode === 'static') {
+          if (Number.isFinite(cfg.min)) opts.scales[axisId].min = cfg.min;
+          if (Number.isFinite(cfg.max)) opts.scales[axisId].max = cfg.max;
+        }
+        // title text from schema unit if available
+        const unit = schema?.fields?.[i]?.unit || '';
+        opts.scales[axisId].title = { display: !!unit, text: unit };
+      }
+
+      // destroy old chart
+      try { if (chart) chart.destroy(); } catch (e) {}
+
+      // recreate chart with sanitized options
+      initChartFrom(existingDatasets, opts);
+      try { sanitizeChartOptions(); chart.update('none'); } catch (e) { console.error('chart.update failed after rebuild', e); }
+    } catch (e) { console.error('rebuildChartSoft failed', e); }
+  }
+
+  // Ensure chart.options contains only expected primitive types for Chart.js (avoid functions/objects where strings expected)
+  function sanitizeChartOptions() {
+    try {
+      if (!chart || !chart.options) return;
+      // sanitize interaction.mode
+      if (chart.options.interaction && chart.options.interaction.mode && typeof chart.options.interaction.mode !== 'string') {
+        chart.options.interaction.mode = String(chart.options.interaction.mode || 'nearest');
+      }
+      const scales = chart.options.scales || {};
+      for (const k of Object.keys(scales)) {
+        const ax = scales[k] || {};
+        // ensure type is string
+        if (ax.type && typeof ax.type !== 'string') ax.type = String(ax.type);
+        // ensure position
+        if (ax.position && typeof ax.position !== 'string') ax.position = String(ax.position);
+        // ensure title exists and text is string or undefined
+        if (!ax.title || typeof ax.title !== 'object') ax.title = { display: false };
+        if (ax.title.text != null && typeof ax.title.text !== 'string') {
+          try { ax.title.text = String(ax.title.text); } catch (e) { ax.title.text = '' + (ax.title.text || ''); }
+        }
+        // write back sanitized axis
+        chart.options.scales[k] = ax;
+      }
+      // sanitize dataset labels and yAxisID
+      if (Array.isArray(chart.data && chart.data.datasets)) {
+        for (let i = 0; i < chart.data.datasets.length; i++) {
+          const ds = chart.data.datasets[i] || {};
+          if (ds.label != null && typeof ds.label !== 'string') {
+            try { ds.label = String(ds.label); } catch (e) { ds.label = '' + (ds.label || ''); }
+          }
+          if (ds.yAxisID != null && typeof ds.yAxisID !== 'string') {
+            try { ds.yAxisID = String(ds.yAxisID); } catch (e) { ds.yAxisID = '' + (ds.yAxisID || ''); }
+          }
+          // ensure data points are arrays of plain objects with numeric x,y or _t
+          if (Array.isArray(ds.data)) {
+            for (let j = 0; j < ds.data.length; j++) {
+              const p = ds.data[j];
+              if (p && typeof p === 'object') {
+                if (p.x != null && typeof p.x !== 'number') p.x = Number(p.x);
+                if (p.y != null && typeof p.y !== 'number') p.y = Number(p.y);
+                if (p._t != null && typeof p._t !== 'number') p._t = Number(p._t);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { console.error('sanitizeChartOptions error', e); }
+  }
+
+  function applyFieldConfig(i) {
+    try {
+      if (!chart || !schema) return;
+      const cfg = fieldConfigs[i] || { mode: 'dynamic' };
+      const axisId = 'y' + i;
+
+      // defensive: ensure scales object
+      chart.options.scales = chart.options.scales || {};
+
+      if (cfg.mode !== 'static') {
+        // reset dataset to default shared y axis
+        if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = 'y';
+        // delete custom axis if exists
+        if (chart.options.scales && chart.options.scales[axisId]) {
+          try { delete chart.options.scales[axisId]; } catch (e) { console.warn('cannot delete axis', axisId, e); }
+        }
+        // ensure a shared 'y' axis exists as a plain object
+        chart.options.scales.y = chart.options.scales.y || { type: 'linear', display: true, title: { display: false, text: '' } };
+      } else {
+        // create/override axis for this series with a fresh plain object (avoid Object.assign with runtime objects)
+        const unit = schema?.fields?.[i]?.unit || '';
+        chart.options.scales[axisId] = {
+          type: 'linear',
+          position: (i % 2 === 0) ? 'left' : 'right',
+          display: true,
+          min: (cfg.min != null && Number.isFinite(cfg.min)) ? cfg.min : undefined,
+          max: (cfg.max != null && Number.isFinite(cfg.max)) ? cfg.max : undefined,
+          title: { display: !!unit, text: unit }
+        };
+        if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = axisId;
+      }
+
+      // try updating chart safely
+      try { sanitizeChartOptions(); chart.update('none'); } catch (e) { console.error('chart update failed in applyFieldConfig', e); try { rebuildChartSoft(); } catch (e2) {} }
+    } catch (e) { console.error('applyFieldConfig error', e); }
+  }
+
+  btnClearLog.addEventListener("click", () => { serialLines = []; serialLogEl.textContent = ""; });
+
+  btnShowLog.addEventListener('click', () => { logOverlay.style.display = 'block'; });
+  closeLogOverlay.addEventListener('click', () => { logOverlay.style.display = 'none'; });
+  const btnRebuild = document.getElementById('btnRebuild');
+  btnRebuild.addEventListener('click', () => { try { rebuildChartSoft(); } catch (e) { console.error(e); } });
+
+  // field menu (reused popover)
+  const fieldMenu = document.createElement('div');
+  fieldMenu.id = 'fieldMenu';
+  fieldMenu.style.cssText = 'position:fixed; display:none; z-index:10000; background:#fff; border:1px solid #ddd; padding:10px; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,0.12); max-width:360px; max-height:80vh; overflow:auto;';
+  fieldMenu.innerHTML = `
+    <div style="margin-bottom:8px"><strong id="fmLabel">Paramètres</strong></div>
+    <div style="margin-bottom:6px">Mode: <select id="fmMode"><option value="dynamic">Dynamique</option><option value="static">Statique</option></select></div>
+    <div style="margin-bottom:6px">Min: <input id="fmMin" type="number" step="any" style="width:120px"></div>
+    <div style="margin-bottom:6px">Max: <input id="fmMax" type="number" step="any" style="width:120px"></div>
+    <div style="margin-bottom:10px">Précision (décimales): <input id="fmPrec" type="number" min="0" max="6" value="3" style="width:80px"></div>
+    <div style="display:flex; gap:8px; justify-content:flex-end"><button id="fmSave" class="pill">OK</button><button id="fmCancel" class="pill">Annuler</button></div>
+  `;
+  document.body.appendChild(fieldMenu);
+
+  const fmMode = document.getElementById('fmMode');
+  const fmMin = document.getElementById('fmMin');
+  const fmMax = document.getElementById('fmMax');
+  const fmPrec = document.getElementById('fmPrec');
+  const fmSave = document.getElementById('fmSave');
+  const fmCancel = document.getElementById('fmCancel');
+  const fmLabel = document.getElementById('fmLabel');
+  let fmCurrentIdx = null;
+
+  function openFieldMenu(idx, anchorEl) {
+    fmCurrentIdx = idx;
+    const cfg = fieldConfigs[idx] || { mode:'dynamic', min:null, max:null, precision:3 };
+    const label = (schema?.fields?.[idx]?.label) || (schema?.fields?.[idx]?.key) || ('S'+(idx+1));
+    fmLabel.textContent = `Paramètres — ${label}`;
+    fmMode.value = cfg.mode || 'dynamic';
+    fmMin.value = Number.isFinite(cfg.min) ? cfg.min : '';
+    fmMax.value = Number.isFinite(cfg.max) ? cfg.max : '';
+    fmPrec.value = Number.isFinite(cfg.precision) ? cfg.precision : 3;
+    // Position menu near anchor but clamp to viewport so it never opens off-screen
+    const rect = anchorEl.getBoundingClientRect();
+    // show hidden to measure size
+    fieldMenu.style.display = 'block';
+    fieldMenu.style.left = '0px';
+    fieldMenu.style.top = '0px';
+    fieldMenu.style.visibility = 'hidden';
+    const mRect = fieldMenu.getBoundingClientRect();
+    const margin = 8;
+    let left = rect.right + margin; // prefer right side
+    let top = rect.top;
+    // if overflowing right, place to the left of anchor
+    if (left + mRect.width > window.innerWidth - margin) {
+      left = rect.left - mRect.width - margin;
+    }
+    // clamp left
+    left = Math.max(margin, Math.min(left, window.innerWidth - mRect.width - margin));
+    // if overflowing bottom, shift up
+    if (top + mRect.height > window.innerHeight - margin) {
+      top = window.innerHeight - mRect.height - margin;
+    }
+    // clamp top
+    top = Math.max(margin, top);
+    fieldMenu.style.left = left + 'px';
+    fieldMenu.style.top = top + 'px';
+    fieldMenu.style.visibility = 'visible';
+  }
+
+  function closeFieldMenu() { fieldMenu.style.display = 'none'; fmCurrentIdx = null; }
+
+  fmCancel.addEventListener('click', () => closeFieldMenu());
+  fmSave.addEventListener('click', () => {
+    if (fmCurrentIdx === null) return closeFieldMenu();
+    const idx = fmCurrentIdx;
+    const mode = fmMode.value;
+    const min = fmMin.value === '' ? null : Number(fmMin.value);
+    const max = fmMax.value === '' ? null : Number(fmMax.value);
+    const precision = Math.max(0, Math.min(6, parseInt(fmPrec.value || '3',10)));
+    fieldConfigs[idx] = { mode, min, max, precision };
+    // apply and persist
+    try { applyFieldConfig(idx); } catch (e) { console.error(e); }
+    try { saveFieldConfigs(); } catch (e) { console.warn(e); }
+    updateFieldReadouts(latestReadings);
+    closeFieldMenu();
+  });
+
+  // click outside to close
+  document.addEventListener('click', (ev) => {
+    if (!fieldMenu.contains(ev.target) && !(ev.target && ev.target.classList && ev.target.classList.contains('gear'))) {
+      fieldMenu.style.display = 'none';
+    }
+  });
+
+  // Fullscreen toggle
+  btnFull.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  });
+  document.addEventListener("fullscreenchange", () => {
+    btnFull.textContent = document.fullscreenElement ? "Quitter plein écran" : "Plein écran";
+  });
+
+  function setStatus(s) { statusEl.innerHTML = `Statut: <b>${s}</b>`; }
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  // ====== Schema (HELLO) ======
+  let schema = null; // {device, fields:[{key,label,unit}]}
+
+  // ====== Plot state ======
+  let followLive = true;
+  let plotRunning = true;
+  let acquiring = true; // when false, ignore incoming DATA/HELLO (pause acquisition)
+  let latestTs = null;        // dernier t_abs en secondes (t_ms/1000)
+  const pending = [];         // {t_s_abs, values:number[]}
+  let recentValsBuffers = []; // per-field sliding buffers for smoothing
+
+  // ====== Crosshair plugin ======
+  const crosshairPlugin = {
+    id: "crosshairReadout",
+    afterDraw(chart) {
+      const active = chart._activeCrosshair;
+      if (!active || active.pixelX == null) return;
+      const {ctx, chartArea} = chart;
+      const x = active.pixelX;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x, chartArea.top);
+      ctx.lineTo(x, chartArea.bottom);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.35)";
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+
+  // ====== Chart init ======
+  const canvasCtx = document.getElementById("chart");
+  let chart = null;
+
+  const defaultChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
     animation: false,
     parsing: false,
-    responsive: true,
+    normalized: true,
+    interaction: { mode: "nearest", intersect: false, axis: "x" },
+    plugins: { legend: { display: true }, tooltip: { enabled: false } },
     scales: {
-      x: { title: { display: true, text: "t (ms)" } },
-      y: { title: { display: true, text: "°C" } },
-    },
-    plugins: {
-      legend: { display: true }
+      x: { type: "linear", title: { display: true, text: "Temps relatif (s) — 0 = maintenant" } },
+      y: { title: { display: true, text: "Valeurs" } }
+    }
+  };
+
+  function initChartFrom(existingDatasets, optionsOverride) {
+    if (typeof Chart === 'undefined') return null;
+    const opts = optionsOverride ? optionsOverride : JSON.parse(JSON.stringify(defaultChartOptions));
+    try {
+      chart = new Chart(canvasCtx, { type: 'line', data: { datasets: existingDatasets || [] }, options: opts, plugins: [crosshairPlugin] });
+      chart._activeCrosshair = null;
+      attachChartMouseHandlers();
+      return chart;
+    } catch (e) {
+      console.error('initChartFrom error', e);
+      return null;
     }
   }
-});
 
-function setStatus(s) {
-  statusEl.innerHTML = `Statut: <b>${s}</b>`;
-}
-
-function pushPoint(t, tc, ti) {
-  const maxPoints = parseInt(winEl.value || "200", 10);
-  chart.data.labels.push(t);
-  chart.data.datasets[0].data.push(tc);
-  chart.data.datasets[1].data.push(ti);
-
-  while (chart.data.labels.length > maxPoints) {
-    chart.data.labels.shift();
-    chart.data.datasets[0].data.shift();
-    chart.data.datasets[1].data.shift();
+  function attachChartMouseHandlers() {
+    if (!chart || !chart.canvas) return;
+    chart.canvas.addEventListener("mousemove", updateCrosshairAndReadout);
+    chart.canvas.addEventListener("mouseleave", () => {
+      chart._activeCrosshair = null;
+      readoutEl.style.display = "none";
+      try { chart.draw(); } catch (e) {}
+    });
   }
-  chart.update("none");
-}
 
-function onNotify(event) {
-  const v = new Uint8Array(event.target.value.buffer);
-  rxBuffer += decoder.decode(v, {stream:true});
+  // create initial chart
+  initChartFrom([], defaultChartOptions);
 
-  // traite ligne par ligne
-  let idx;
-  while ((idx = rxBuffer.indexOf("\n")) >= 0) {
-    const line = rxBuffer.slice(0, idx).trim();
-    rxBuffer = rxBuffer.slice(idx + 1);
+  function setSchema(hello) {
+    // normalize fields: accept objects or arrays [key,label,unit]
+    const rawFields = hello.fields || [];
+    const fields = rawFields.map(f => {
+      if (Array.isArray(f)) {
+        const [key, label, unit] = f;
+        return { key: key ?? String(label ?? ""), label: label ?? key ?? "", unit: unit ?? "" };
+      }
+      if (f && typeof f === "object") {
+        return { key: f.key ?? f.name ?? "", label: f.label ?? f.key ?? "", unit: f.unit ?? "" };
+      }
+      return { key: String(f), label: String(f), unit: "" };
+    });
+    hello = Object.assign({}, hello, { fields });
+    schema = hello;
+    const n = schema.fields?.length ?? 0;
+    schemaStateEl.textContent = `${schema.device || "OK"} (${n} champs)`;
 
-    if (!line) continue;
+    if (!chart) return;
+
+    chart.data.datasets = (schema.fields || []).map((f, i) => ({
+      label: `${f.label || f.key || ("S"+(i+1))}${f.unit ? " ("+f.unit+")" : ""}`,
+      data: [], tension: 0.15, pointRadius: 0, borderWidth: 2
+    }));
+
+    // create one Y axis per dataset (y0, y1, ...), assign each dataset to its axis
+    chart.options = chart.options || {};
+    // Build a fresh scales object with only plain primitives to avoid retaining Chart.js runtime/scriptable objects
+    const newScales = Object.create(null);
+    // keep a simple x scale (text preserved from default semantics)
+    newScales.x = { type: 'linear', title: { display: true, text: 'Temps relatif (s) — 0 = maintenant' } };
+    for (let i = 0; i < (schema.fields || []).length; i++) {
+      const axisId = 'y' + i;
+      const unit = schema.fields[i].unit || '';
+      newScales[axisId] = {
+        type: 'linear',
+        position: (i % 2 === 0) ? 'left' : 'right',
+        display: true,
+        title: { display: !!unit, text: unit }
+      };
+      if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = axisId;
+    }
+    chart.options.scales = newScales;
+
+    // reset buffers/timeline
+    latestTs = null;
+    pending.length = 0;
+    // init per-field recent value buffers (pour moyenne mobile)
+    recentValsBuffers = (schema.fields || []).map(() => []);
+    readoutEl.style.display = "none";
+    chart._activeCrosshair = null;
+
+    // render right-side field readouts
+    try { renderFieldReadouts(schema.fields || []); } catch (e) {}
+
+    try { sanitizeChartOptions(); chart.update("none"); } catch (e) { console.error('chart.update failed in setSchema', e); try { rebuildChartSoft(); } catch (e2) {} }
+  }
+
+  // Auto schema si HELLO absent : crée S1..Sn à partir du nombre de colonnes
+  function ensureSchemaFromData(colCount) {
+    if (schema) return;
+    // colCount = nombre de valeurs après t_ms
+    const fields = [];
+    for (let i = 0; i < colCount; i++) fields.push({ key: "s"+(i+1), label: "S"+(i+1), unit: "" });
+    setSchema({ schema: 1, device: "AUTO", fields });
+  }
+
+  function updateSlidersText() {
+    winSValEl.textContent = String(winSEl.value);
+    scrollValEl.textContent = Math.round((scrollEl.value / 1000) * 100) + "%";
+    const n = chart?.data?.datasets?.[0]?.data?.length ?? 0;
+    ptCountEl.textContent = String(n);
+  }
+
+  function pruneOldData() {
+    if (latestTs === null || !chart || chart.data.datasets.length === 0) return;
+    const cutoff = latestTs - KEEP_S;
+    const arr = chart.data.datasets[0].data;
+    let i = 0;
+    while (i < arr.length && arr[i]._t < cutoff) i++;
+    if (i > 0) {
+      for (const d of chart.data.datasets) d.data.splice(0, i);
+    }
+  }
+
+  function rebuildRelativeX() {
+    if (latestTs === null || !chart) return;
+    for (const d of chart.data.datasets) {
+      for (const p of d.data) p.x = p._t - latestTs; // négatif -> 0
+    }
+  }
+
+  function applyXWindow() {
+    if (!chart) return;
+    const winS = Number(winSEl.value);
+
+    if (followLive) {
+      chart.options.scales.x.min = -winS;
+      chart.options.scales.x.max = 0;
+      scrollEl.value = 1000;
+      updateSlidersText();
+      return;
+    }
+
+    const pos = Number(scrollEl.value) / 1000;
+    const minStart = -KEEP_S;
+    const maxStart = -winS;
+    const start = minStart + pos * (maxStart - minStart);
+    chart.options.scales.x.min = start;
+    chart.options.scales.x.max = start + winS;
+  }
+
+  winSEl.addEventListener("input", () => {
+    followLive = false;
+    updateSlidersText();
+    applyXWindow();
+    chart?.update("none");
+  });
+  scrollEl.addEventListener("input", () => {
+    followLive = false;
+    updateSlidersText();
+    applyXWindow();
+    chart?.update("none");
+  });
+  btnLive.addEventListener("click", () => {
+    followLive = true;
+    applyXWindow();
+    chart?.update("none");
+  });
+
+  btnPause.addEventListener("click", () => {
+    plotRunning = !plotRunning;
+    acquiring = plotRunning; // pause acquisition when plotting paused
+    btnPause.textContent = plotRunning ? "Pause affichage" : "Reprendre affichage";
+    plotStateEl.textContent = plotRunning ? "LIVE" : "PAUSE";
+  });
+
+  // Hover -> crosshair + readout
+  function updateCrosshairAndReadout(evt) {
+    if (!schema || !chart || chart.data.datasets.length === 0) return;
+
+    const points = chart.getElementsAtEventForMode(evt, "nearest", { intersect: false, axis: "x" }, false);
+    if (!points || points.length === 0) {
+      chart._activeCrosshair = null;
+      readoutEl.style.display = "none";
+      chart.draw();
+      return;
+    }
+
+    const idx = points[0].index;
+    const xPix = points[0].element.x;
+
+    const ds0 = chart.data.datasets[0];
+    const xRel = ds0.data[idx]?.x;
+
+    chart._activeCrosshair = { index: idx, pixelX: xPix };
+
+    let html = `<div class="t">t = ${Number.isFinite(xRel) ? xRel.toFixed(3) : "—"} s</div>`;
+    for (let i = 0; i < schema.fields.length; i++) {
+      const f = schema.fields[i];
+      const v = chart.data.datasets[i]?.data?.[idx]?.y;
+      const val = Number.isFinite(v) ? v.toFixed(3) : "—";
+      html += `<div class="rowv"><span class="k">${f.label || f.key}</span><span class="v">${val}${f.unit ? " " + f.unit : ""}</span></div>`;
+    }
+
+    readoutEl.innerHTML = html;
+    readoutEl.style.display = "block";
+    chart.draw();
+  }
+
+  if (chart) {
+    chart.canvas.addEventListener("mousemove", updateCrosshairAndReadout);
+    chart.canvas.addEventListener("mouseleave", () => {
+      chart._activeCrosshair = null;
+      readoutEl.style.display = "none";
+      chart.draw();
+    });
+  }
+
+  // Flush throttled
+  let uiTimer = null;
+  function stopUiTimer(){ if(uiTimer) clearInterval(uiTimer); uiTimer=null; }
+  function startUiTimer() {
+    stopUiTimer();
+    const hz = clamp(parseInt(uiHzEl.value || "12", 10), 1, 60);
+    uiTimer = setInterval(flushPendingToChart, Math.round(1000 / hz));
+  }
+  uiHzEl.addEventListener("change", startUiTimer);
+
+  function flushPendingToChart() {
+    if (!plotRunning) return;
+    if (!chart) return;
+    if (!schema || chart.data.datasets.length === 0) return;
+    if (pending.length === 0) return;
+
+    for (const p of pending) {
+      // ensure buffers exist for each field
+      if (!recentValsBuffers || recentValsBuffers.length !== chart.data.datasets.length) {
+        recentValsBuffers = chart.data.datasets.map(() => []);
+      }
+
+      for (let i = 0; i < schema.fields.length; i++) {
+        const raw = p.values[i];
+        const buf = recentValsBuffers[i] || (recentValsBuffers[i] = []);
+        buf.push(Number.isFinite(raw) ? raw : NaN);
+        while (buf.length > 5) buf.shift();
+
+        const valid = buf.filter(v => Number.isFinite(v));
+        const y = (valid.length > 0) ? (valid.reduce((a, b) => a + b, 0) / valid.length) : NaN;
+
+        chart.data.datasets[i].data.push({ x: 0, y, _t: p.t_s_abs });
+      }
+    }
+    pending.length = 0;
+
+    pruneOldData();
+    rebuildRelativeX();
+    applyXWindow();
+    updateSlidersText();
+    try { sanitizeChartOptions(); chart.update("none"); } catch (e) { console.error('chart.update failed in flushPendingToChart', e); try { rebuildChartSoft(); } catch (e2) {} }
+  }
+
+  startUiTimer();
+  updateSlidersText();
+  applyXWindow();
+
+  // ====== BLE parsing ======
+  let device, server, service, txChar;
+  const decoder = new TextDecoder("utf-8");
+  let rxBuffer = "";
+
+  function handleLine(line) {
     lastEl.textContent = line;
 
-    // attend format: t_ms,tc,int,fault
-    const parts = line.split(",");
-    if (parts.length < 4) continue;
+    // HELLO {...}  — accepter aussi 'HELLO{...}' (sans espace)
+    if (line.startsWith("HELLO")) {
+      try {
+        let json = line.replace(/^HELLO\s*/, "");
+        let hello;
+        try {
+          hello = JSON.parse(json);
+        } catch (e1) {
+          // attempt to sanitize common non-standard patterns like {"a","b","c"} -> ["a","b","c"]
+          try {
+            let s = json.replace(/\{\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\}/g, '["$1","$2","$3"]');
+            // convert single-quoted strings to double-quoted
+            s = s.replace(/'([^']*)'/g, function(m, p1){ return JSON.stringify(p1); });
+            hello = JSON.parse(s);
+          } catch (e2) {
+            throw e1;
+          }
+        }
 
-    const t = Number(parts[0]);
-    const tc = Number(parts[1]);
-    const ti = Number(parts[2]);
-    const fault = Number(parts[3]);
+        if (!hello.fields || !Array.isArray(hello.fields) || hello.fields.length === 0) {
+          schemaStateEl.textContent = "HELLO invalide";
+          return;
+        }
+        setSchema(hello);
+      } catch (e) {
+        console.error("HELLO parse error", e);
+        schemaStateEl.textContent = "HELLO parse error";
+      }
+      return;
+    }
 
-    if (Number.isFinite(t) && Number.isFinite(tc) && Number.isFinite(ti)) {
-      // option : ignorer si fault != 0
-      if (fault === 0) pushPoint(t, tc, ti);
+    // DATA ...
+    let csv = line;
+    if (line.startsWith("DATA ")) csv = line.slice(5);
+
+    // CSV t_ms,v1,v2,...
+    if (!csv.includes(",")) return;
+    const parts = csv.split(",");
+
+    if (parts.length < 2) return;
+
+    const t_ms = Number(parts[0]);
+    if (!Number.isFinite(t_ms)) return;
+    const t_s_abs = t_ms / 1000;
+    if (latestTs === null || t_s_abs > latestTs) latestTs = t_s_abs;
+
+    // auto-schema si pas de HELLO
+    const colCount = parts.length - 1; // v1..vn
+    ensureSchemaFromData(colCount);
+
+    if (!schema) return;
+
+    // si mismatch (ex: schema=5 champs mais data=1 champ), on ignore (ou on pourrait rebuild)
+    if (colCount < schema.fields.length) return;
+
+    const values = [];
+    for (let i = 0; i < schema.fields.length; i++) {
+      const v = Number(parts[i + 1]);
+      values.push(Number.isFinite(v) ? v : NaN);
+    }
+
+    // update latest readouts immediately (raw last received values)
+    try { updateFieldReadouts(values); } catch (e) {}
+
+    pending.push({ t_s_abs, values });
+  }
+
+  function onNotify(event) {
+    const v = new Uint8Array(event.target.value.buffer);
+    rxBuffer += decoder.decode(v, { stream: true });
+
+    let idx;
+    while ((idx = rxBuffer.indexOf("\n")) >= 0) {
+      const line = rxBuffer.slice(0, idx).trim();
+      rxBuffer = rxBuffer.slice(idx + 1);
+      if (line) {
+        // show raw serial line in the log tab for debugging
+        try { appendLog(line); } catch (e) {}
+        // only parse/handle incoming lines when acquisition is enabled
+        if (acquiring) handleLine(line);
+      }
     }
   }
-}
 
-btnConnect.onclick = async () => {
-  try {
-    setStatus("connexion…");
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [SERVICE_UUID] }]
-    });
-    device.addEventListener("gattserverdisconnected", () => {
-      setStatus("déconnecté");
-      btnDisconnect.disabled = true;
-      btnConnect.disabled = false;
-    });
+  btnConnect.onclick = async () => {
+    try {
+      setStatus("connexion…");
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: "ESP32" }],
+        optionalServices: [SERVICE_UUID]
+      });
 
-    server = await device.gatt.connect();
-    service = await server.getPrimaryService(SERVICE_UUID);
-    txChar = await service.getCharacteristic(TX_CHAR_UUID);
+      device.addEventListener("gattserverdisconnected", () => {
+        setStatus("déconnecté");
+        btnDisconnect.disabled = true;
+        btnConnect.disabled = false;
+        btnPause.disabled = true;
+      });
 
-    await txChar.startNotifications();
-    txChar.addEventListener("characteristicvaluechanged", onNotify);
+      server = await device.gatt.connect();
+      service = await server.getPrimaryService(SERVICE_UUID);
+      txChar = await service.getCharacteristic(TX_CHAR_UUID);
 
-    setStatus("connecté à " + device.name);
-    btnDisconnect.disabled = false;
-    btnConnect.disabled = true;
-  } catch (e) {
-    console.error(e);
-    setStatus("erreur: " + e.message);
-  }
-};
+      await txChar.startNotifications();
+      txChar.addEventListener("characteristicvaluechanged", onNotify);
 
-btnDisconnect.onclick = async () => {
-  try {
-    if (device?.gatt?.connected) device.gatt.disconnect();
-  } catch (e) {}
-};
+      setStatus("connecté à " + (device.name || "appareil"));
+      btnDisconnect.disabled = false;
+      btnConnect.disabled = true;
+      btnPause.disabled = false;
+
+      schemaStateEl.textContent = "attente HELLO… (ou auto-schema sur DATA)";
+    } catch (e) {
+      console.error(e);
+      setStatus("erreur: " + e.message);
+    }
+  };
+
+  btnDisconnect.onclick = async () => {
+    try { if (device?.gatt?.connected) device.gatt.disconnect(); } catch (e) {}
+  };
+
+  window.addEventListener("beforeunload", () => {
+    stopUiTimer();
+    try { if (device?.gatt?.connected) device.gatt.disconnect(); } catch(e) {}
+  });
 </script>
 </body>
 </html>
