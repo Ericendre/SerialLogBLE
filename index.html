@@ -10,7 +10,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
-    body { font-family: system-ui, sans-serif; margin: 16px; min-height: 100vh; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0px 16px; min-height: 100vh; box-sizing: border-box; }
     html, body { height: 100%; }
     body { display: flex; flex-direction: column; }
     button { padding: 10px 14px; }
@@ -25,6 +25,9 @@
     /* avoid fixed pixel height so the chart can flex to available space */
     #chartWrap { height: auto; width: 100%; max-width: 1300px; position: relative; }
     canvas { display:block; width:100% !important; height:100% !important; }
+
+    /* ensure chartWrap fills available space inside chartPane */
+    #chartWrap { flex: 1 1 auto; min-height: 0; max-width: none; display:flex; flex-direction:column; }
 
     /* Main layout: chart + right sidebar */
     #main { display: flex; gap: 12px; align-items: stretch; flex: 1 1 auto; min-height: 0; overflow: hidden; }
@@ -43,7 +46,7 @@
     .fieldItem .value { line-height:1; }
     /* Top readouts (horizontal) */
     #topReadouts { display:flex; gap:8px; width:100%; align-items:stretch; overflow:auto; padding:6px 0; }
-    #topReadouts .fieldItem { flex: 1 1 auto; min-width:120px; height:80px; margin:0 4px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
+    #topReadouts .fieldItem { flex: 1 1 auto; min-width:120px; height:150px; margin:0 4px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
     #topReadouts .fieldItem .value { font-size: clamp(18px, 3.5vw, 48px); }
     .fieldItem .value { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
@@ -76,6 +79,8 @@
       margin: 10px 0;
       max-width: 900px;
     }
+    /* canvas will fill its parent */
+    #chartWrap canvas { width:100% !important; height:100% !important; display:block; }
   </style>
 </head>
 
@@ -87,6 +92,8 @@
   <div class="row">
     <button id="btnConnect">Connecter</button>
     <button id="btnDisconnect" disabled>Déconnecter</button>
+    <button id="btnSerialConnect">Connecter USB</button>
+    <button id="btnSerialDisconnect" disabled>Déconnecter USB</button>
 
     <button id="btnPause" disabled>Pause affichage</button>
     <span class="pill">Affichage: <b id="plotState">LIVE</b></span>
@@ -102,10 +109,6 @@
 
   <!-- topReadouts will be rendered here -->
   <div id="topReadouts"></div>
-
-  <div class="row">
-    
-  </div>
 
   <div id="main">
     <div id="chartPane">
@@ -142,11 +145,11 @@
       const text = `JS Error: ${msg} ${where}`;
       console.error(text, ev.error || ev);
       try { document.getElementById('fatal').style.display = 'block'; document.getElementById('fatal').textContent = text; } catch (e) {}
-      try { if (typeof appendLog === 'function') appendLog(text); } catch (e) {}
+      try { if (typeof appendLog === 'function') appendLog(text, "sys"); } catch (e) {}
     } catch (e) { console.error('error handler failed', e); }
   });
   window.addEventListener('unhandledrejection', function(ev){
-    try { const r = ev && ev.reason ? ev.reason : ev; if (typeof appendLog === 'function') appendLog('UnhandledRejection: '+String(r)); document.getElementById('fatal').style.display='block'; document.getElementById('fatal').textContent='UnhandledRejection: '+String(r); } catch(e){console.error(e);} 
+    try { const r = ev && ev.reason ? ev.reason : ev; if (typeof appendLog === 'function') appendLog('UnhandledRejection: '+String(r), "sys"); document.getElementById('fatal').style.display='block'; document.getElementById('fatal').textContent='UnhandledRejection: '+String(r); } catch(e){console.error(e);} 
   });
 
   // ====== NUS UUID ======
@@ -176,6 +179,8 @@
   // Serial log UI (overlay) + right sidebar readouts
   const btnShowLog = document.getElementById("btnShowLog");
   const btnClearLog = document.getElementById("btnClearLog");
+  const logBleEl = document.getElementById("logBle");
+  const logUsbEl = document.getElementById("logUsb");
   const autoScrollEl = document.getElementById("autoScroll");
   const btnFull = document.getElementById("btnFull");
   const fieldReadoutsEl = document.getElementById("topReadouts") || document.getElementById("fieldReadouts");
@@ -184,7 +189,7 @@
   const logOverlay = document.createElement('div');
   logOverlay.id = 'logOverlay';
   logOverlay.style.cssText = 'position:fixed; left:10%; top:10%; width:80%; height:80%; background:rgba(255,255,255,0.98); border:1px solid #ddd; border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,0.2); display:none; z-index:9999; padding:10px; box-sizing:border-box; overflow:auto;';
-  logOverlay.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Serial log</strong><div><button id="closeLogOverlay" class="pill">Fermer</button></div></div><pre id="serialLog" style="height:calc(100% - 40px); margin:0; padding:8px; border-radius:6px; background:#fefefe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow:auto;"></pre>';
+  logOverlay.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Serial log</strong><div style="display:flex; gap:10px; align-items:center;"><label><input id="logBle" type="checkbox" checked> Log BLE</label><label><input id="logUsb" type="checkbox" checked> Log USB</label><button id="closeLogOverlay" class="pill">Fermer</button></div></div><pre id="serialLog" style="height:calc(100% - 40px); margin:0; padding:8px; border-radius:6px; background:#fefefe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow:auto;"></pre>';
   document.body.appendChild(logOverlay);
   const serialLogEl = document.getElementById('serialLog');
   const closeLogOverlay = document.getElementById('closeLogOverlay');
@@ -194,9 +199,12 @@
   let latestReadings = [];
   let fieldConfigs = [];
 
-  function appendLog(line) {
+  function appendLog(line, source) {
     if (!line) return;
-    serialLines.push(line);
+    if (source === "ble" && logBleEl && !logBleEl.checked) return;
+    if (source === "usb" && logUsbEl && !logUsbEl.checked) return;
+    const prefix = source === "ble" ? "[BLE] " : (source === "usb" ? "[USB] " : "");
+    serialLines.push(prefix + line);
     if (serialLines.length > LOG_MAX) serialLines.splice(0, serialLines.length - LOG_MAX);
     serialLogEl.textContent = serialLines.join("\n");
     if (autoScrollEl && autoScrollEl.checked) serialLogEl.scrollTop = serialLogEl.scrollHeight;
@@ -208,7 +216,7 @@
     latestReadings = fields.map(() => NaN);
     // set css var for font scaling
     fieldReadoutsEl.style.setProperty('--field-count', String(fields.length || 1));
-    fieldConfigs = fields.map(() => ({ mode: 'dynamic', min: null, max: null, precision: 3 }));
+    fieldConfigs = fields.map(() => ({ precision: 3 }));
     // try to load saved configs from storage and merge
     try {
       const saved = loadFieldConfigsFromStorage();
@@ -225,7 +233,7 @@
       const f = fields[i];
       const div = document.createElement('div');
       div.className = 'fieldItem';
-      div.innerHTML = `<div class="label">${f.label || f.key || ('S'+(i+1))}</div><div class="value" id="fieldVal${i}">—${f.unit ? ' '+f.unit : ''}</div><button class="gear" data-idx="${i}">⚙</button>`;
+      div.innerHTML = `<div class="label">${f.label || f.key || ('S'+(i+1))}</div><div class="value" id="fieldVal${i}">?${f.unit ? ' '+f.unit : ''}</div><button class="gear" data-idx="${i}">⚙</button>`;
       fieldReadoutsEl.appendChild(div);
     }
     // attach gear handlers
@@ -234,8 +242,6 @@
       const idx = Number(ev.currentTarget.getAttribute('data-idx'));
       openFieldMenu(idx, ev.currentTarget);
     }));
-    // apply loaded configs to chart
-    try { for (let i = 0; i < fieldConfigs.length; i++) applyFieldConfig(i); } catch (e) { console.error('applyFieldConfig error', e); }
   }
 
   function updateFieldReadouts(values) {
@@ -249,6 +255,7 @@
       latestReadings[i] = Number.isFinite(v) ? v : NaN;
     }
   }
+
 
   // Persistence helpers (use localStorage to work with file:// and avoid cookie issues)
   function saveFieldConfigsToStorage() {
@@ -265,61 +272,23 @@
     } catch (e) { console.warn('loadFieldConfigsFromStorage', e); return null; }
   }
 
-  function applyFieldConfig(i) {
-    try {
-      if (!chart || !schema) return;
-      const cfg = fieldConfigs[i] || { mode: 'dynamic' };
-      const axisId = 'y' + i;
-
-      // defensive: ensure scales object
-      chart.options.scales = chart.options.scales || {};
-
-      if (cfg.mode !== 'static') {
-        // reset dataset to default y axis
-        if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = 'y';
-        // delete axis if exists
-        if (chart.options.scales && chart.options.scales[axisId]) {
-          try { delete chart.options.scales[axisId]; } catch (e) { console.warn('cannot delete axis', axisId, e); }
-        }
-      } else {
-        // create/override axis for this series with static min/max
-        chart.options.scales[axisId] = Object.assign({}, chart.options.scales[axisId] || {}, {
-          type: 'linear',
-          position: (i % 2 === 0) ? 'left' : 'right',
-          display: true,
-          min: (cfg.min != null) ? cfg.min : undefined,
-          max: (cfg.max != null) ? cfg.max : undefined
-        });
-        if (chart.data.datasets[i]) chart.data.datasets[i].yAxisID = axisId;
-      }
-
-      // try updating chart safely
-      try { chart.update('none'); } catch (e) { console.error('chart update failed in applyFieldConfig', e); }
-    } catch (e) { console.error('applyFieldConfig error', e); }
-  }
-
   btnClearLog.addEventListener("click", () => { serialLines = []; serialLogEl.textContent = ""; });
 
   btnShowLog.addEventListener('click', () => { logOverlay.style.display = 'block'; });
   closeLogOverlay.addEventListener('click', () => { logOverlay.style.display = 'none'; });
 
-  // field menu (reused popover)
+
+  // field menu (reused popover) - precision only
   const fieldMenu = document.createElement('div');
   fieldMenu.id = 'fieldMenu';
   fieldMenu.style.cssText = 'position:fixed; display:none; z-index:10000; background:#fff; border:1px solid #ddd; padding:10px; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,0.12); max-width:360px; max-height:80vh; overflow:auto;';
   fieldMenu.innerHTML = `
-    <div style="margin-bottom:8px"><strong id="fmLabel">Paramètres</strong></div>
-    <div style="margin-bottom:6px">Mode: <select id="fmMode"><option value="dynamic">Dynamique</option><option value="static">Statique</option></select></div>
-    <div style="margin-bottom:6px">Min: <input id="fmMin" type="number" step="any" style="width:120px"></div>
-    <div style="margin-bottom:6px">Max: <input id="fmMax" type="number" step="any" style="width:120px"></div>
-    <div style="margin-bottom:10px">Précision (décimales): <input id="fmPrec" type="number" min="0" max="6" value="3" style="width:80px"></div>
+    <div style="margin-bottom:8px"><strong id="fmLabel">Precision</strong></div>
+    <div style="margin-bottom:10px">Chiffres apres la virgule: <input id="fmPrec" type="number" min="0" max="6" value="3" style="width:80px"></div>
     <div style="display:flex; gap:8px; justify-content:flex-end"><button id="fmSave" class="pill">OK</button><button id="fmCancel" class="pill">Annuler</button></div>
   `;
   document.body.appendChild(fieldMenu);
 
-  const fmMode = document.getElementById('fmMode');
-  const fmMin = document.getElementById('fmMin');
-  const fmMax = document.getElementById('fmMax');
   const fmPrec = document.getElementById('fmPrec');
   const fmSave = document.getElementById('fmSave');
   const fmCancel = document.getElementById('fmCancel');
@@ -328,12 +297,9 @@
 
   function openFieldMenu(idx, anchorEl) {
     fmCurrentIdx = idx;
-    const cfg = fieldConfigs[idx] || { mode:'dynamic', min:null, max:null, precision:3 };
+    const cfg = fieldConfigs[idx] || { precision: 3 };
     const label = (schema?.fields?.[idx]?.label) || (schema?.fields?.[idx]?.key) || ('S'+(idx+1));
-    fmLabel.textContent = `Paramètres — ${label}`;
-    fmMode.value = cfg.mode || 'dynamic';
-    fmMin.value = Number.isFinite(cfg.min) ? cfg.min : '';
-    fmMax.value = Number.isFinite(cfg.max) ? cfg.max : '';
+    fmLabel.textContent = `Precision - ${label}`;
     fmPrec.value = Number.isFinite(cfg.precision) ? cfg.precision : 3;
     // Position menu near anchor but clamp to viewport so it never opens off-screen
     const rect = anchorEl.getBoundingClientRect();
@@ -369,12 +335,8 @@
   fmSave.addEventListener('click', () => {
     if (fmCurrentIdx === null) return closeFieldMenu();
     const idx = fmCurrentIdx;
-    const mode = fmMode.value;
-    const min = fmMin.value === '' ? null : Number(fmMin.value);
-    const max = fmMax.value === '' ? null : Number(fmMax.value);
     const precision = Math.max(0, Math.min(6, parseInt(fmPrec.value || '3',10)));
-    fieldConfigs[idx] = { mode, min, max, precision };
-    applyFieldConfig(idx);
+    fieldConfigs[idx] = { precision };
     try { saveFieldConfigsToStorage(); } catch (e) {}
     updateFieldReadouts(latestReadings);
     closeFieldMenu();
@@ -386,6 +348,7 @@
       fieldMenu.style.display = 'none';
     }
   });
+
 
   // Fullscreen toggle
   btnFull.addEventListener("click", () => {
@@ -446,7 +409,7 @@
       interaction: { mode: "nearest", intersect: false, axis: "x" },
       plugins: { legend: { display: true }, tooltip: { enabled: false } },
       scales: {
-        x: { type: "linear", title: { display: true, text: "Temps relatif (s) — 0 = maintenant" } },
+        x: { type: "linear" },
         y: { title: { display: true, text: "Valeurs" } }
       }
     },
@@ -595,7 +558,8 @@
     for (let i = 0; i < schema.fields.length; i++) {
       const f = schema.fields[i];
       const v = chart.data.datasets[i]?.data?.[idx]?.y;
-      const val = Number.isFinite(v) ? v.toFixed(3) : "—";
+      const prec = (fieldConfigs?.[i]?.precision != null) ? fieldConfigs[i].precision : 3;
+      const val = Number.isFinite(v) ? v.toFixed(prec) : "—";
       html += `<div class="rowv"><span class="k">${f.label || f.key}</span><span class="v">${val}${f.unit ? " " + f.unit : ""}</span></div>`;
     }
 
@@ -675,9 +639,15 @@
         try {
           hello = JSON.parse(json);
         } catch (e1) {
-          // attempt to sanitize common non-standard patterns like {"a","b","c"} -> ["a","b","c"]
+          // attempt to sanitize common non-standard patterns
           try {
-            let s = json.replace(/\{\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\}/g, '["$1","$2","$3"]');
+            let s = json;
+            // insert missing commas between array/object items (e.g. }{ or ][)
+            s = s.replace(/}\s*{/g, '},{').replace(/\]\s*\[/g, '],[');
+            // remove trailing commas before closing brackets/braces
+            s = s.replace(/,\s*([}\]])/g, '$1');
+            // {"a","b","c"} -> ["a","b","c"]
+            s = s.replace(/\{\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\}/g, '["$1","$2","$3"]');
             // convert single-quoted strings to double-quoted
             s = s.replace(/'([^']*)'/g, function(m, p1){ return JSON.stringify(p1); });
             hello = JSON.parse(s);
@@ -744,7 +714,7 @@
       rxBuffer = rxBuffer.slice(idx + 1);
       if (line) {
         // show raw serial line in the log tab for debugging
-        try { appendLog(line); } catch (e) {}
+        try { appendLog(line, "ble"); } catch (e) {}
         // only parse/handle incoming lines when acquisition is enabled
         if (acquiring) handleLine(line);
       }
@@ -794,5 +764,6 @@
     try { if (device?.gatt?.connected) device.gatt.disconnect(); } catch(e) {}
   });
 </script>
+<script src="serial-web.js"></script>
 </body>
 </html>

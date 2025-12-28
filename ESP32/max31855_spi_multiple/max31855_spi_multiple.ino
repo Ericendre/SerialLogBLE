@@ -25,8 +25,9 @@ bool deviceConnected = false;
 bool testMode = false;
 
 // helper for test emulation
-void generateTestValues(float* egt, float* oil_pres, float* oil_temp, float* boost, float* afr, uint32_t t_ms) {
+void generateTestValues(float* rpm, float* egt, float* oil_pres, float* oil_temp, float* boost, float* afr, uint32_t t_ms) {
   float t = t_ms / 1000.0f;
+  *rpm = 800.0f + 2200.0f * (0.5f + 0.5f * sinf(t * 0.8f));
   *egt = 700.0f + 200.0f * sinf(t * 0.4f) + (random(-50, 50) / 100.0f);
   *oil_pres = 3.0f + 1.5f * sinf(t * 0.7f + 1.2f) + (random(-20, 20) / 100.0f);
   *oil_temp = 90.0f + 12.0f * sinf(t * 0.25f + 0.5f) + (random(-30, 30) / 100.0f);
@@ -37,13 +38,15 @@ void generateTestValues(float* egt, float* oil_pres, float* oil_temp, float* boo
 // ===== Handshake (HELLO) =====
 // Décris le "schéma" des colonnes envoyées ensuite.
 // Ici: t_ms, egt, oil_pres, oil_temp, boost, afr
+// HELLO: describe fields in order: RPM, EGT, oil_pres, oil_temp, boost, afr
 static const char* HELLO_LINE =
   "HELLO {\"fields\":["
+  "{\"RPM\",\"RPM\",\"\"},"
+  "{\"boost\",\"Boost\",\"b\"},"
+  "{\"afr\",\"AFR\",\"AFR\"},"
   "{\"egt\",\"EGT\",\"°C\"},"
   "{\"oil_pres\",\"Pression huile\",\"b\"},"
   "{\"oil_temp\",\"Temp huile\",\"°C\"},"
-  "{\"boost\",\"Boost\",\"b\"},"
-  "{\"afr\",\"AFR\",\"AFR\"}"
   "]}\n";
 
 // Flag: envoyer HELLO une fois à la prochaine loop après connexion
@@ -146,24 +149,26 @@ void loop() {
 
   uint32_t t = millis();
 
-  if (testMode) {
-    float egt, oil_pres, oil_temp, boost, afr;
-    generateTestValues(&egt, &oil_pres, &oil_temp, &boost, &afr, t);
+    if (testMode) {
+    float rpm, egt, oil_pres, oil_temp, boost, afr;
+    generateTestValues(&rpm, &egt, &oil_pres, &oil_temp, &boost, &afr, t);
 
     String line;
     line.reserve(128);
     line += "DATA ";
     line += String(t);
     line += ",";
-    line += String(egt, 2);
-    line += ",";
-    line += String(oil_pres, 2);
-    line += ",";
-    line += String(oil_temp, 1);
+    line += String(rpm, 0);
     line += ",";
     line += String(boost, 2);
     line += ",";
     line += String(afr, 2);
+    line += ",";
+    line += String(egt, 2);
+    line += ",";
+    line += String(oil_temp, 1);
+    line += ",";
+    line += String(oil_pres, 2);
     line += "\n";
 
     bleSendLine(line);
@@ -184,8 +189,11 @@ void loop() {
       line += "DATA ";
       line += String(t);
       line += ",";
+      // No RPM sensor in this path: send 0 as placeholder
+      line += String(0);
+      line += ",";
       line += String(thermocouple_temperature, 2);
-      line += ",0,0,0,0";
+      line += ",0,0,0,0"; // keep placeholders for other values
       line += "\n";
 
       bleSendLine(line);
