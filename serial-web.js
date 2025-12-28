@@ -53,6 +53,7 @@
   let keepAliveTimer = null;
   let logTimer = null;
   let commandQueue = Promise.resolve();
+  let breakSupported = true;
 
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,13 +191,16 @@
   async function fastInit(payload, timingOffsetMs) {
     const lowMs = 25 - timingOffsetMs;
     const highMs = 25 - timingOffsetMs;
-    try {
-      await port.setSignals({ break: true });
-      await delay(lowMs);
-      await port.setSignals({ break: false });
-      await delay(highMs);
-    } catch (e) {
-      logUsb("fast init break not supported");
+    if (breakSupported) {
+      try {
+        await port.setSignals({ break: true });
+        await delay(lowMs);
+        await port.setSignals({ break: false });
+        await delay(highMs);
+      } catch (e) {
+        breakSupported = false;
+        logUsb("fast init break not supported");
+      }
     }
     await writer.write(payload);
     try {
