@@ -46,6 +46,117 @@
     }
   ];
 
+  const ECU_IDENTIFICATION_TABLE = [
+    {
+      offset: 0x82014,
+      expected: [[54, 54, 50, 49]],
+      ecu: {
+        name: "SIMK43 8mbit",
+        eeprom_size_bytes: 1048576,
+        memory_offset: 0,
+        bin_offset: 0,
+        memory_write_offset: -0x7000,
+        calibration_size_bytes: 0x10000,
+        calibration_size_bytes_flash: 0xFEFE,
+        program_section_offset: 0xA0000,
+        program_section_size: 0x60000,
+        program_section_flash_size: 0x5FFE8,
+        program_section_flash_bin_offset: 0xA0010,
+        program_section_flash_memory_offset: 0x10
+      }
+    },
+    {
+      offset: 0x90040,
+      expected: [[99, 97, 54, 54]],
+      ecu: {
+        name: "SIMK43 2.0 4mbit",
+        eeprom_size_bytes: 524288,
+        memory_offset: 0,
+        bin_offset: -0x80000,
+        memory_write_offset: -0x7000,
+        calibration_size_bytes: 0x10000,
+        calibration_size_bytes_flash: 0xFEFE,
+        program_section_offset: 0xA0000,
+        program_section_size: 0x60000,
+        program_section_flash_size: 0x5FFE8,
+        program_section_flash_bin_offset: 0x20010,
+        program_section_flash_memory_offset: 0x10
+      }
+    },
+    {
+      offset: 0x88040,
+      expected: [[99, 97, 54, 53, 52, 48, 49]],
+      ecu: {
+        name: "SIMK43 V6 4mbit (5WY17)",
+        eeprom_size_bytes: 524288,
+        memory_offset: -0x8000,
+        bin_offset: -0x88000,
+        memory_write_offset: -0x7800,
+        calibration_size_bytes: 0x8000,
+        calibration_size_bytes_flash: 0x5F40,
+        program_section_offset: 0x98000,
+        program_section_size: 0x70000,
+        program_section_flash_size: 0x6FFE4,
+        program_section_flash_bin_offset: 0x10010,
+        program_section_flash_memory_offset: -0x7FF0
+      }
+    },
+    {
+      offset: 0x88040,
+      expected: [[99, 97, 54, 53, 52], [99, 97, 54, 53, 53]],
+      ecu: {
+        name: "SIMK43 V6 4mbit (5WY18+)",
+        eeprom_size_bytes: 524288,
+        memory_offset: -0x8000,
+        bin_offset: -0x88000,
+        memory_write_offset: -0x7800,
+        calibration_size_bytes: 0x8000,
+        calibration_size_bytes_flash: 0x6F20,
+        program_section_offset: 0x98000,
+        program_section_size: 0x70000,
+        program_section_flash_size: 0x6FFE4,
+        program_section_flash_bin_offset: 0x10010,
+        program_section_flash_memory_offset: -0x7FF0
+      }
+    },
+    {
+      offset: 0x48040,
+      expected: [[99, 97, 54, 54, 48], [99, 97, 54, 53, 50], [99, 97, 54, 53, 48]],
+      ecu: {
+        name: "SIMK41 / V6 2mbit",
+        eeprom_size_bytes: 262144,
+        memory_offset: -0x48000,
+        bin_offset: -0x88000,
+        memory_write_offset: -0xB800,
+        calibration_size_bytes: 0x8000,
+        calibration_size_bytes_flash: 0x7F00,
+        program_section_offset: 0x98000,
+        program_section_size: 0x30000,
+        program_section_flash_size: 0x2FFF0,
+        program_section_flash_bin_offset: 0x10010,
+        program_section_flash_memory_offset: -0x47FF0
+      }
+    },
+    {
+      offset: 0x88040,
+      expected: [[99, 97, 54, 54, 49]],
+      ecu: {
+        name: "SIMK43 2.0 4mbit (Sonata)",
+        eeprom_size_bytes: 524288,
+        memory_offset: -0x8000,
+        bin_offset: -0x88000,
+        memory_write_offset: -0x7800,
+        calibration_size_bytes: 0x8000,
+        calibration_size_bytes_flash: 0x5F40,
+        program_section_offset: 0x98000,
+        program_section_size: 0x70000,
+        program_section_flash_size: 0x6FFE4,
+        program_section_flash_bin_offset: 0x10010,
+        program_section_flash_memory_offset: -0x7FF0
+      }
+    }
+  ];
+
   let port = null;
   let reader = null;
   let writer = null;
@@ -123,7 +234,17 @@
       if (remaining <= 0) throw new Error("timeout");
       const readPromise = reader.read();
       const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), remaining));
-      const { value, done } = await Promise.race([readPromise, timeoutPromise]);
+      let result;
+      try {
+        result = await Promise.race([readPromise, timeoutPromise]);
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        if (msg.toLowerCase().includes("break")) {
+          continue;
+        }
+        throw e;
+      }
+      const { value, done } = result;
       if (done) throw new Error("serial closed");
       if (value && value.length) {
         buffer.push(...value);
@@ -167,8 +288,8 @@
     return Uint8Array.from(payload);
   }
 
-  async function readPdu() {
-    const header = await readExact(4, CONFIG.readTimeoutMs);
+  async function readPdu(timeoutMs) {
+    const header = await readExact(4, timeoutMs || CONFIG.readTimeoutMs);
     let counter = header[0];
     let data = [];
     if (counter === 0x80) {
@@ -177,7 +298,7 @@
       counter = counter - 0x80;
       data.push(header[3]);
     }
-    const rest = await readExact(counter, CONFIG.readTimeoutMs);
+    const rest = await readExact(counter, timeoutMs || CONFIG.readTimeoutMs);
     for (let i = 0; i < rest.length - 1; i++) data.push(rest[i]);
     return Uint8Array.from(data);
   }
@@ -232,14 +353,21 @@
       await fastInit(initPayload, -2);
       await fastInit(initPayload, 2);
     }
+
+    try { await readPdu(400); } catch (e) {}
   }
 
   async function execute(service, data) {
     return commandQueue = commandQueue.then(async () => {
       const pdu = Uint8Array.from([service].concat(data || []));
-      const response = await sendReadPdu(pdu);
-      const status = response[0];
-      const payload = response.slice(1);
+      let response = await sendReadPdu(pdu);
+      let status = response[0];
+      let payload = response.slice(1);
+      while (status === 0x7f && payload[1] === 0x78) {
+        response = await readPdu();
+        status = response[0];
+        payload = response.slice(1);
+      }
       if (status === 0x7f) {
         const errService = payload[0];
         const errCode = payload[1];
@@ -249,18 +377,113 @@
     });
   }
 
-  async function startSession() {
-    await execute(0x10, [0x81]);
-    try {
-      const timing = await execute(0x83, [0x00]);
-      const params = Array.from(timing.data);
-      if (params.length >= 6) {
-        const p = params.slice(1, 6);
-        await execute(0x83, [0x03].concat(p));
-      }
-    } catch (e) {
-      logUsb("timing params failed");
+  async function readMemoryByAddress(offset, size) {
+    const b1 = (offset >> 16) & 0xff;
+    const b2 = (offset >> 8) & 0xff;
+    const b3 = offset & 0xff;
+    const resp = await execute(0x23, [b1, b2, b3, size]);
+    return Array.from(resp.data);
+  }
+
+  function calculateKey(seed) {
+    let key = 0x9360;
+    for (let i = 0; i < 0x24; i++) {
+      key = (key * 2) ^ seed;
     }
+    return key & 0xffff;
+  }
+
+  async function enableSecurityAccess() {
+    const resp = await execute(0x27, [0x01]);
+    const seed = resp.data.slice(1);
+    if (seed.length < 2) return;
+    if (seed[0] === 0x00 && seed[1] === 0x00) return;
+    const seedConcat = ((seed[0] << 8) | seed[1]) & 0xffff;
+    const key = calculateKey(seedConcat);
+    const keyBytes = [(key >> 8) & 0xff, key & 0xff];
+    await execute(0x27, [0x02].concat(keyBytes));
+  }
+
+  async function identifyEcu() {
+    for (const entry of ECU_IDENTIFICATION_TABLE) {
+      const expectedList = entry.expected || [];
+      if (!expectedList.length) continue;
+      const size = expectedList[0].length;
+      try {
+        const data = await readMemoryByAddress(entry.offset, size);
+        for (const expected of expectedList) {
+          if (expected.length !== data.length) continue;
+          let match = true;
+          for (let i = 0; i < expected.length; i++) {
+            if (expected[i] !== data[i]) { match = false; break; }
+          }
+          if (match) return entry.ecu;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  async function readAscii(offset, size) {
+    const data = await readMemoryByAddress(offset, size);
+    return data.map((b) => String.fromCharCode(b)).join("");
+  }
+
+  async function startDiagnosticSession(sessionType, baudrateIdentifier) {
+    const data = [sessionType];
+    if (baudrateIdentifier !== undefined && baudrateIdentifier !== null) {
+      data.push(baudrateIdentifier);
+    }
+    return execute(0x10, data);
+  }
+
+  async function setTimingParametersMax() {
+    const timing = await execute(0x83, [0x00]);
+    const params = Array.from(timing.data).slice(1);
+    if (params.length >= 5) {
+      await execute(0x83, [0x03].concat(params.slice(0, 5)));
+    }
+  }
+
+  async function runKwpLogger() {
+    logUsb("Selected protocol: kline. Initializing..");
+    try { await execute(0x20, []); } catch (e) {}
+    try { await execute(0x82, []); } catch (e) {}
+
+    await initKwp();
+    startKeepAlive();
+
+    logUsb("Trying to start diagnostic session");
+    await startDiagnosticSession(0x85);
+
+    logUsb("Set timing parameters to maximum");
+    try { await setTimingParametersMax(); } catch (e) { logUsb("timing params failed"); }
+
+    logUsb("Security Access");
+    try { await enableSecurityAccess(); } catch (e) { logUsb("security access failed"); }
+
+    logUsb("Trying to identify ECU automatically..");
+    const ecu = await identifyEcu();
+    if (!ecu) throw new Error("ECU identification failed");
+    logUsb("Found! " + ecu.name);
+
+    logUsb("Trying to find calibration..");
+    try {
+      const calib = await readAscii(0x090000 + ecu.memory_offset, 8);
+      const desc = await readAscii(0x090040 + ecu.memory_offset, 8);
+      logUsb("Found! Description: " + desc + ", calibration: " + calib);
+    } catch (e) {
+      logUsb("Calibration read failed");
+    }
+
+    logUsb("Building parameter header");
+    emitHello();
+
+    logUsb("Logging..");
+    await startDiagnosticSession(0x81);
+    startLogging();
   }
 
   function startKeepAlive() {
@@ -298,7 +521,6 @@
 
   function startLogging() {
     stopLogging();
-    emitHello();
     logTimer = setInterval(() => {
       pollOnce().catch((e) => logUsb("poll error"));
     }, CONFIG.logIntervalMs);
@@ -316,15 +538,13 @@
       port = await navigator.serial.requestPort();
       await port.open({ baudRate: CONFIG.baudRate });
       await ensureReaderWriter();
-      await initKwp();
-      await startSession();
-      startKeepAlive();
-      startLogging();
+      await runKwpLogger();
       setUiConnected(true);
       logUsb("KWP log started");
       try { if (typeof setStatus === "function") setStatus("connecte USB (KWP)"); } catch (e) {}
     } catch (e) {
-      logUsb("connect error");
+      const msg = String(e && e.message ? e.message : e);
+      logUsb("connect error: " + msg);
       try { if (typeof setStatus === "function") setStatus("erreur USB: " + e.message); } catch (e2) {}
       setUiConnected(false);
     }
