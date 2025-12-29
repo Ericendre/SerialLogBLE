@@ -188,6 +188,12 @@
     return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join(" ");
   }
 
+  function dropLeadingZeros() {
+    while (buffer.length > 0 && buffer[0] === 0x00) {
+      buffer.shift();
+    }
+  }
+
   function readLE(bytes) {
     let val = 0;
     for (let i = 0; i < bytes.length; i++) {
@@ -257,6 +263,7 @@
       if (value && value.length) {
         if (CONFIG.debugRx) logUsb("RX " + hexDump(value));
         buffer.push(...value);
+        dropLeadingZeros();
       }
     }
     const out = buffer.slice(0, length);
@@ -305,6 +312,7 @@
     }
     if (!same) {
       buffer = echo.concat(buffer);
+      dropLeadingZeros();
       logUsb("echo mismatch (kept as RX): " + hexDump(echo));
       return;
     }
