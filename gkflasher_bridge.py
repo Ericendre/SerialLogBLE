@@ -1,7 +1,6 @@
 import json
 import queue
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -12,30 +11,57 @@ from urllib.parse import urlparse, parse_qs
 
 try:
     import serial.tools.list_ports
-except Exception:  # pragma: no cover
+except Exception:
     serial = None
-
 
 ROOT = Path(__file__).resolve().parent
 GKFLASHER_DIR = ROOT / "GKFlasher"
-GKFLASHER = GKFLASHER_DIR / "gkflasher.py"
-LOGGING_PY = GKFLASHER_DIR / "flasher" / "logging.py"
+GKBUS_DIR = ROOT / "gkbus-main"
+
+if str(GKBUS_DIR) not in sys.path:
+    sys.path.insert(0, str(GKBUS_DIR))
+if str(GKFLASHER_DIR) not in sys.path:
+    sys.path.insert(0, str(GKFLASHER_DIR))
+
+from gkbus.hardware.kline_hardware import KLineHardware
+from gkbus.transport import Kwp2000OverKLineTransport
+from gkbus.protocol import kwp2000
+from gkbus.protocol.kwp2000 import commands, enums
+from ecu_definitions import ECU_IDENTIFICATION_TABLE
 
 
-def load_data_sources():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("gk_logging", LOGGING_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.data_sources
-
-
-def build_hello(data_sources):
-    fields = []
-    for source in data_sources:
-        for p in source["parameters"]:
-            fields.append({"key": sanitize_key(p["name"]), "label": p["name"], "unit": p.get("unit", "")})
-    return "HELLO " + json.dumps({"device": "GKFlasher", "schema": 1, "fields": fields}, ensure_ascii=False)
+DATA_SOURCES = [
+    {
+        "id": 0x01,
+        "parameters": [
+            {"name": "Oxygen Sensor-Bank1/Sensor1", "unit": "mV", "position": 38, "size": 2, "conv": lambda a: a * 4.883, "precision": 1},
+            {"name": "Air Flow Rate from Mass Air Flow Sensor", "unit": "kg/h", "position": 15, "size": 2, "conv": lambda a: a * 0.03125, "precision": 2},
+            {"name": "Engine Coolant Temperature Sensor", "unit": "C", "position": 4, "size": 1, "conv": lambda a: a * 0.75, "precision": 2},
+            {"name": "Oil Temperature Sensor", "unit": "C", "position": 6, "size": 1, "conv": lambda a: (a * 1) - 40, "precision": 2},
+            {"name": "Intake Air Temperature Sensor", "unit": "C", "position": 9, "size": 1, "conv": lambda a: (a * 0.75) - 48, "precision": 2},
+            {"name": "Throttle Position", "unit": "'", "position": 11, "size": 1, "conv": lambda a: a * 0.468627, "precision": 2},
+            {"name": "Battery voltage", "unit": "V", "position": 1, "size": 1, "conv": lambda a: a * 0.10159, "precision": 2},
+            {"name": "Vehicle Speed", "unit": "km/h", "position": 30, "size": 1, "conv": lambda a: a, "precision": 1},
+            {"name": "Engine Speed", "unit": "RPM", "position": 31, "size": 2, "conv": lambda a: a, "precision": 1},
+            {"name": "Oxygen Sensor-Bank1/Sensor2", "unit": "mV", "position": 40, "size": 2, "conv": lambda a: a * 4.883, "precision": 2},
+            {"name": "Ignition Timing Advance for 1 Cylinder", "unit": "'", "position": 58, "size": 1, "conv": lambda a: (a * -0.325) - 72, "precision": 2},
+            {"name": "Cylinder Injection Time-Bank1", "unit": "ms", "position": 76, "size": 2, "conv": lambda a: a * 0.004, "precision": 2},
+            {"name": "Long Term Fuel Trim-Idle Load", "unit": "ms", "position": 89, "size": 2, "conv": lambda a: a * 0.004, "precision": 2},
+            {"name": "Long Term Fuel Trim-Part Load", "unit": "%", "position": 91, "size": 2, "conv": lambda a: a * 0.001529, "precision": 2},
+            {"name": "Camshaft Actual Position", "unit": "'", "position": 142, "size": 1, "conv": lambda a: (a * 0.375) - 60, "precision": 2},
+            {"name": "Camshaft position target", "unit": "'", "position": 143, "size": 1, "conv": lambda a: (a * 0.375) - 60, "precision": 2},
+            {"name": "Ignition dwell time", "unit": "ms", "position": 106, "size": 2, "conv": lambda a: a * 0.004, "precision": 2},
+            {"name": "EVAP Purge valve", "unit": "%", "position": 101, "size": 2, "conv": lambda a: a * 0.003052, "precision": 2},
+            {"name": "Idle speed control actuator", "unit": "%", "position": 99, "size": 2, "conv": lambda a: a * 0.001529, "precision": 2},
+            {"name": "CVVT Valve Duty", "unit": "%", "position": 156, "size": 2, "conv": lambda a: a * 0.001526, "precision": 2},
+            {"name": "Oxygen Sensor Heater Duty-Bank1/Sensor1", "unit": "%", "position": 93, "size": 1, "conv": lambda a: a * 0.390625, "precision": 2},
+            {"name": "Oxygen Sensor Heater Duty-Bank1/Sensor2", "unit": "%", "position": 94, "size": 1, "conv": lambda a: a * 0.390625, "precision": 2},
+            {"name": "CVVT Status", "unit": "", "position": 145, "size": 1, "conv": lambda a: a, "precision": 1},
+            {"name": "CVVT Actuation Status", "unit": "", "position": 146, "size": 1, "conv": lambda a: a, "precision": 1},
+            {"name": "CVVT Duty Control Status", "unit": "", "position": 160, "size": 1, "conv": lambda a: a, "precision": 1},
+        ],
+    }
+]
 
 
 def sanitize_key(name):
@@ -43,20 +69,69 @@ def sanitize_key(name):
     return re.sub(r"^_+|_+$", "", s)
 
 
-class GKFlasherBridge:
+def build_hello():
+    fields = []
+    for source in DATA_SOURCES:
+        for p in source["parameters"]:
+            fields.append({"key": sanitize_key(p["name"]), "label": p["name"], "unit": p.get("unit", "")})
+    return "HELLO " + json.dumps({"device": "GKBus", "schema": 1, "fields": fields}, ensure_ascii=False)
+
+
+def calculate_key(seed):
+    key = 0x9360
+    for _ in range(0x24):
+        key = (key * 2) ^ seed
+    return key & 0xFFFF
+
+
+def enable_security_access(bus):
+    resp = bus.execute(commands.SecurityAccess(enums.AccessType.PROGRAMMING_REQUEST_SEED)).get_data()
+    seed = list(resp)[1:]
+    if len(seed) < 2:
+        return
+    if seed[0] == 0x00 and seed[1] == 0x00:
+        return
+    seed_concat = ((seed[0] << 8) | seed[1]) & 0xFFFF
+    key = calculate_key(seed_concat)
+    bus.execute(commands.SecurityAccess(enums.AccessType.PROGRAMMING_SEND_KEY, key))
+
+
+def read_memory_by_address(bus, offset, size):
+    return list(bus.execute(commands.ReadMemoryByAddress(offset=offset, size=size)).get_data())
+
+
+def identify_ecu(bus):
+    for entry in ECU_IDENTIFICATION_TABLE:
+        expected_list = entry["expected"]
+        size = len(expected_list[0])
+        try:
+            result = read_memory_by_address(bus, entry["offset"], size)
+        except Exception:
+            continue
+        for expected in expected_list:
+            if result == expected:
+                return entry["ecu"]
+    return None
+
+
+def grab(payload, param):
+    start = param["position"]
+    size = param["size"]
+    chunk = payload[start:start + size]
+    if len(chunk) != size:
+        return float("nan")
+    raw = int.from_bytes(bytes(chunk), "little")
+    return round(param["conv"](raw), param["precision"])
+
+
+class GKBusBridge:
     def __init__(self):
-        self.proc = None
-        self.reader_thread = None
+        self.thread = None
         self.stop_event = threading.Event()
         self.clients = []
         self.clients_lock = threading.Lock()
-        self.data_sources = load_data_sources()
-        self.param_list = []
-        for src in self.data_sources:
-            for p in src["parameters"]:
-                self.param_list.append(p)
-        self.hello_line = build_hello(self.data_sources)
-        self.current_values = []
+        self.hello_line = build_hello()
+        self.bus = None
 
     def list_ports(self):
         if not hasattr(serial, "tools"):
@@ -93,81 +168,100 @@ class GKFlasherBridge:
 
     def stop(self):
         self.stop_event.set()
-        if self.proc and self.proc.poll() is None:
+        if self.thread:
+            self.thread.join(timeout=2)
+        self.thread = None
+        if self.bus:
             try:
-                self.proc.terminate()
+                self.bus.close()
             except Exception:
                 pass
-        if self.reader_thread:
-            self.reader_thread.join(timeout=2)
-        self.proc = None
-        self.reader_thread = None
+        self.bus = None
 
     def start(self, port):
         self.stop()
         self.stop_event.clear()
-        cmd = [
-            sys.executable,
-            str(GKFLASHER),
-            "--protocol",
-            "kline",
-            "--interface",
-            port,
-            "-b",
-            "120000",
-            "-l",
-        ]
-        self.proc = subprocess.Popen(
-            cmd,
-            cwd=str(GKFLASHER_DIR),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        self.broadcast({"type": "log", "text": "Serveur: lancement GKFlasher sur " + port})
-        self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self.reader_thread.start()
+        self.thread = threading.Thread(target=self._run, args=(port,), daemon=True)
+        self.thread.start()
 
-    def _reader_loop(self):
-        self.current_values = []
-        param_index = 0
+    def _run(self, port):
         try:
-            for line in self.proc.stdout:
-                if self.stop_event.is_set():
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                self.broadcast({"type": "log", "text": line})
-                if param_index >= len(self.param_list):
-                    param_index = 0
-                    self.current_values = []
-                expected = self.param_list[param_index]
-                name = expected["name"]
-                unit = expected.get("unit", "")
-                if line.startswith(name + ":"):
-                    raw = line[len(name) + 1 :].strip()
-                    if unit and raw.endswith(unit):
-                        raw = raw[: -len(unit)]
-                    raw = raw.strip()
-                    try:
-                        value = float(raw)
-                    except ValueError:
-                        value = float("nan")
-                    self.current_values.append(value)
-                    param_index += 1
-                    if param_index >= len(self.param_list):
-                        ts = int(time.time() * 1000)
-                        csv = "DATA " + ",".join([str(ts)] + [str(v) for v in self.current_values])
-                        self.broadcast({"type": "line", "text": csv})
-                        param_index = 0
-                        self.current_values = []
+            self.broadcast({"type": "log", "text": "Serveur: demarrage GKBus sur " + port})
+            hardware = KLineHardware(port, baudrate=120000, timeout=2)
+            transport = Kwp2000OverKLineTransport(hardware, tx_id=0x11, rx_id=0xF1)
+            bus = kwp2000.Kwp2000Protocol(transport)
+            self.bus = bus
+
+            try:
+                bus.execute(commands.StopDiagnosticSession())
+                bus.execute(commands.StopCommunication())
+            except Exception:
+                pass
+
+            bus.init(commands.StartCommunication(), commands.TesterPresent(enums.ResponseType.REQUIRED), keepalive_delay=1.5)
+
+            self.broadcast({"type": "log", "text": "Trying to start diagnostic session"})
+            bus.execute(commands.StartDiagnosticSession(enums.DiagnosticSession.FLASH_REPROGRAMMING))
+            transport.hardware.set_timeout(12)
+
+            self.broadcast({"type": "log", "text": "Set timing parameters to maximum"})
+            try:
+                available = bus.execute(commands.AccessTimingParameters().read_limits_of_possible_timing_parameters()).get_data()
+                bus.execute(commands.AccessTimingParameters().set_timing_parameters_to_given_values(*available[1:]))
+            except Exception:
+                self.broadcast({"type": "log", "text": "Timing params not supported"})
+
+            self.broadcast({"type": "log", "text": "Security Access"})
+            try:
+                enable_security_access(bus)
+            except Exception:
+                self.broadcast({"type": "log", "text": "Security access failed"})
+
+            self.broadcast({"type": "log", "text": "Trying to identify ECU automatically.."})
+            ecu = identify_ecu(bus)
+            if ecu:
+                self.broadcast({"type": "log", "text": "Found! " + ecu["name"]})
+                try:
+                    calib = read_memory_by_address(bus, 0x090000 + ecu["memory_offset"], 8)
+                    desc = read_memory_by_address(bus, 0x090040 + ecu["memory_offset"], 8)
+                    calib_s = "".join(chr(x) for x in calib)
+                    desc_s = "".join(chr(x) for x in desc)
+                    self.broadcast({"type": "log", "text": "Found! Description: " + desc_s + ", calibration: " + calib_s})
+                except Exception:
+                    self.broadcast({"type": "log", "text": "Calibration read failed"})
+            else:
+                self.broadcast({"type": "log", "text": "ECU identification failed"})
+
+            self.broadcast({"type": "log", "text": "Building parameter header"})
+            self.broadcast({"type": "line", "text": self.hello_line})
+
+            self.broadcast({"type": "log", "text": "Logging.."})
+            bus.execute(commands.StartDiagnosticSession(enums.DiagnosticSession.DEFAULT))
+
+            while not self.stop_event.is_set():
+                values = []
+                for source in DATA_SOURCES:
+                    resp = bus.execute(commands.ReadDataByLocalIdentifier(source["id"])).get_data()
+                    raw = list(resp)
+                    for param in source["parameters"]:
+                        values.append(grab(raw, param))
+                ts = int(time.time() * 1000)
+                csv = "DATA " + ",".join([str(ts)] + [str(v) for v in values])
+                self.broadcast({"type": "line", "text": csv})
+                time.sleep(0.1)
+
+        except Exception as e:
+            self.broadcast({"type": "log", "text": "Serveur: erreur " + str(e)})
         finally:
-            self.broadcast({"type": "log", "text": "Serveur: GKFlasher termine"})
+            self.broadcast({"type": "log", "text": "Serveur: GKBus termine"})
+            try:
+                if self.bus:
+                    self.bus.close()
+            except Exception:
+                pass
 
 
-BRIDGE = GKFlasherBridge()
+BRIDGE = GKBusBridge()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -253,7 +347,7 @@ def main():
     host = "127.0.0.1"
     port = 8765
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"Serveur GKFlasher bridge: http://{host}:{port}")
+    print(f"Serveur GKBus bridge: http://{host}:{port}")
     server.serve_forever()
 
 
