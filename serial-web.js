@@ -167,6 +167,7 @@
   let commandQueue = Promise.resolve();
   let breakSupported = true;
   let readTimeoutMs = CONFIG.readTimeoutMs;
+  let lastExecutionTime = Date.now();
 
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -324,7 +325,9 @@
     const payload = buildPayload(pdu);
     logUsb("PDU TX " + Array.from(pdu).map((b) => b.toString(16).padStart(2, "0")).join(" "));
     await writeRaw(payload);
-    return readPdu();
+    const rx = await readPdu();
+    logUsb("PDU RX " + Array.from(rx).map((b) => b.toString(16).padStart(2, "0")).join(" "));
+    return rx;
   }
 
   async function fastInit(payload, timingOffsetMs) {
@@ -343,11 +346,11 @@
     }
     await writer.write(payload);
     try {
-      await readExact(40, 400);
+      const resp = await readExact(40, 400);
+      return resp;
     } catch (e) {
       return null;
     }
-    return true;
   }
 
   async function initKwp() {
@@ -367,10 +370,12 @@
 
     const initPdu = Uint8Array.from([0x81]);
     const initPayload = buildPayload(initPdu);
-    let ok = await fastInit(initPayload, 0);
-    if (!ok) {
-      await fastInit(initPayload, -2);
-      await fastInit(initPayload, 2);
+    let response = await fastInit(initPayload, 0);
+    if (!response || ![0x00, 0x81, 0xC1].includes(response[0])) {
+      response = await fastInit(initPayload, -2);
+    }
+    if (!response || ![0x00, 0x81, 0xC1].includes(response[0])) {
+      response = await fastInit(initPayload, 2);
     }
 
     try { await readPdu(400); } catch (e) {}
@@ -392,6 +397,7 @@
         const errCode = payload[1];
         throw new Error("KWP negative response: service 0x" + errService.toString(16) + " code 0x" + errCode.toString(16));
       }
+      lastExecutionTime = Date.now();
       return { status, data: payload };
     });
   }
@@ -468,9 +474,6 @@
 
   async function runKwpLogger() {
     logUsb("Selected protocol: kline. Initializing..");
-    try { await execute(0x20, []); } catch (e) {}
-    try { await execute(0x82, []); } catch (e) {}
-
     await initKwp();
     startKeepAlive();
 
@@ -510,7 +513,10 @@
   function startKeepAlive() {
     stopKeepAlive();
     keepAliveTimer = setInterval(() => {
-      execute(0x3e, [0x01]).catch(() => {});
+      const elapsed = Date.now() - lastExecutionTime;
+      if (elapsed >= CONFIG.keepAliveMs) {
+        execute(0x3e, [0x01]).catch(() => {});
+      }
     }, CONFIG.keepAliveMs);
   }
 
