@@ -413,7 +413,8 @@
       response = await fastInit(initPayload, 2);
     }
 
-    try { await readPdu(400); } catch (e) {}
+    buffer = [];
+    try { await readExact(1, 200); } catch (e) {}
   }
 
   async function execute(service, data) {
