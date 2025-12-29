@@ -62,8 +62,16 @@ class GKFlasherBridge:
             return []
         ports = []
         for p in serial.tools.list_ports.comports():
-            ports.append({"port": p.device, "description": p.description})
+            ports.append({"port": p.device, "description": p.description, "vid": p.vid, "pid": p.pid})
         return ports
+
+    def select_port_by_vid_pid(self, vid, pid):
+        if not hasattr(serial, "tools"):
+            return None
+        for p in serial.tools.list_ports.comports():
+            if p.vid == vid and p.pid == pid:
+                return p.device
+        return None
 
     def broadcast(self, payload):
         data = json.dumps(payload, ensure_ascii=False)
@@ -183,6 +191,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/start":
             params = parse_qs(parsed.query)
             port = params.get("port", [""])[0]
+            if not port:
+                vid = params.get("vid", [""])[0]
+                pid = params.get("pid", [""])[0]
+                if vid and pid:
+                    try:
+                        port = BRIDGE.select_port_by_vid_pid(int(vid), int(pid))
+                    except ValueError:
+                        port = None
             if not port:
                 return self._send_json({"error": "missing port"}, status=HTTPStatus.BAD_REQUEST)
             BRIDGE.start(port)

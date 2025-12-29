@@ -1,42 +1,16 @@
 (() => {
-  async function fetchPorts() {
-    const res = await fetch("/api/ports");
-    if (!res.ok) throw new Error("ports fetch failed");
-    return res.json();
-  }
-
   function setStartStop(running) {
-    const btnStart = document.getElementById("btnPyStart");
-    const btnStop = document.getElementById("btnPyStop");
+    const btnStart = document.getElementById("btnSerialConnect");
+    const btnStop = document.getElementById("btnSerialDisconnect");
     if (btnStart) btnStart.disabled = running;
     if (btnStop) btnStop.disabled = !running;
   }
 
-  async function refreshPorts() {
-    const select = document.getElementById("comPort");
-    if (!select) return;
-    select.innerHTML = "";
-    try {
-      const ports = await fetchPorts();
-      for (const p of ports) {
-        const opt = document.createElement("option");
-        opt.value = p.port;
-        opt.textContent = p.port + (p.description ? " - " + p.description : "");
-        select.appendChild(opt);
-      }
-    } catch (e) {
-      try { if (typeof appendLog === "function") appendLog("Liste des ports indisponible", "py"); } catch (e2) {}
-    }
-  }
-
-  async function startLog() {
-    const select = document.getElementById("comPort");
-    const port = select ? select.value : "";
-    if (!port) {
-      try { if (typeof appendLog === "function") appendLog("Aucun port COM selectionne", "py"); } catch (e) {}
-      return;
-    }
-    const res = await fetch("/api/start?port=" + encodeURIComponent(port), { method: "POST" });
+  async function startLogWithPort(info) {
+    const params = new URLSearchParams();
+    if (info && info.usbVendorId != null) params.set("vid", String(info.usbVendorId));
+    if (info && info.usbProductId != null) params.set("pid", String(info.usbProductId));
+    const res = await fetch("/api/start?" + params.toString(), { method: "POST" });
     if (!res.ok) {
       try { if (typeof appendLog === "function") appendLog("Demarrage serveur impossible", "py"); } catch (e) {}
       return;
@@ -66,14 +40,23 @@
   }
 
   function init() {
-    const btnRefresh = document.getElementById("btnComRefresh");
-    const btnStart = document.getElementById("btnPyStart");
-    const btnStop = document.getElementById("btnPyStop");
-    if (btnRefresh) btnRefresh.addEventListener("click", refreshPorts);
-    if (btnStart) btnStart.addEventListener("click", startLog);
+    const btnStart = document.getElementById("btnSerialConnect");
+    const btnStop = document.getElementById("btnSerialDisconnect");
+    if (btnStart) btnStart.addEventListener("click", async () => {
+      if (!("serial" in navigator)) {
+        try { if (typeof appendLog === "function") appendLog("WebSerial non supporte", "py"); } catch (e) {}
+        return;
+      }
+      try {
+        const port = await navigator.serial.requestPort();
+        const info = port.getInfo ? port.getInfo() : {};
+        await startLogWithPort(info);
+      } catch (e) {
+        try { if (typeof appendLog === "function") appendLog("Selection port annulee", "py"); } catch (e2) {}
+      }
+    });
     if (btnStop) btnStop.addEventListener("click", stopLog);
     setStartStop(false);
-    refreshPorts();
     startStream();
   }
 

@@ -92,13 +92,8 @@
   <div class="row">
     <button id="btnConnect">Connecter</button>
     <button id="btnDisconnect" disabled>Déconnecter</button>
-    <label>Port COM:
-      <select id="comPort"></select>
-    </label>
-    <button id="btnComRefresh" class="pill">Rafraîchir</button>
-    <button id="btnPyStart" class="pill">Démarrer log ECU</button>
-    <button id="btnPyStop" class="pill" disabled>Stop log ECU</button>
-
+    <button id="btnSerialConnect">Connecter USB</button>
+    <button id="btnSerialDisconnect" disabled>Déconnecter USB</button>
     <button id="btnPause" disabled>Pause affichage</button>
     <span class="pill">Affichage: <b id="plotState">LIVE</b></span>
 
@@ -110,6 +105,7 @@
     <button id="btnClearLog" class="pill">Clear log</button>
     <label style="margin-left:8px"><input id="autoScroll" type="checkbox" checked> Auto-scroll</label>
   </div>
+
 
   <!-- topReadouts will be rendered here -->
   <div id="topReadouts"></div>
@@ -166,7 +162,6 @@
   const statusEl = document.getElementById("status");
   const lastEl = document.getElementById("last");
   const btnConnect = document.getElementById("btnConnect");
-  const btnDisconnect = document.getElementById("btnDisconnect");
 
   const btnPause = document.getElementById("btnPause");
   const plotStateEl = document.getElementById("plotState");
@@ -367,6 +362,11 @@
   });
 
   function setStatus(s) { statusEl.innerHTML = `Statut: <b>${s}</b>`; }
+  function setBleUiConnected(connected) {
+    if (!btnConnect) return;
+    btnConnect.textContent = connected ? "D?connecter" : "Connecter";
+    btnPause.disabled = !connected;
+  }
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
   // ====== Schema (HELLO) ======
@@ -727,17 +727,19 @@
 
   btnConnect.onclick = async () => {
     try {
-      setStatus("connexion…");
+      if (device?.gatt?.connected) {
+        device.gatt.disconnect();
+        return;
+      }
+      setStatus("connexion?");
       device = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: "ESP32" }],
         optionalServices: [SERVICE_UUID]
       });
 
       device.addEventListener("gattserverdisconnected", () => {
-        setStatus("déconnecté");
-        btnDisconnect.disabled = true;
-        btnConnect.disabled = false;
-        btnPause.disabled = true;
+        setStatus("d?connect?");
+        setBleUiConnected(false);
       });
 
       server = await device.gatt.connect();
@@ -747,20 +749,15 @@
       await txChar.startNotifications();
       txChar.addEventListener("characteristicvaluechanged", onNotify);
 
-      setStatus("connecté à " + (device.name || "appareil"));
-      btnDisconnect.disabled = false;
-      btnConnect.disabled = true;
-      btnPause.disabled = false;
+      setStatus("connect? ? " + (device.name || "appareil"));
+      setBleUiConnected(true);
 
-      schemaStateEl.textContent = "attente HELLO… (ou auto-schema sur DATA)";
+      schemaStateEl.textContent = "attente HELLO? (ou auto-schema sur DATA)";
     } catch (e) {
       console.error(e);
       setStatus("erreur: " + e.message);
+      setBleUiConnected(false);
     }
-  };
-
-  btnDisconnect.onclick = async () => {
-    try { if (device?.gatt?.connected) device.gatt.disconnect(); } catch (e) {}
   };
 
   window.addEventListener("beforeunload", () => {
