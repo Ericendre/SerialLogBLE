@@ -251,7 +251,9 @@ class GKBusBridge:
                 time.sleep(0.1)
 
         except Exception as e:
-            self.broadcast({"type": "log", "text": "Serveur: erreur " + str(e)})
+            msg = str(e).strip()
+            detail = msg if msg else repr(e)
+            self.broadcast({"type": "log", "text": "Serveur: erreur " + type(e).__name__ + " " + detail})
         finally:
             self.broadcast({"type": "log", "text": "Serveur: GKBus termine"})
             try:
