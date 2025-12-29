@@ -258,17 +258,51 @@
     return Uint8Array.from(out);
   }
 
+  async function readEcho(sentBytes, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 200);
+    const collected = [];
+    while (collected.length < sentBytes.length && Date.now() < deadline) {
+      if (buffer.length > 0) {
+        collected.push(buffer.shift());
+        continue;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const readPromise = reader.read();
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), remaining));
+      let result;
+      try {
+        result = await Promise.race([readPromise, timeoutPromise]);
+      } catch (e) {
+        break;
+      }
+      const { value, done } = result;
+      if (done) break;
+      if (value && value.length) {
+        collected.push(...value);
+      }
+    }
+    return collected;
+  }
+
   async function writeRaw(bytes) {
     await delay(100);
     logUsb("TX " + Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join(" "));
     await writer.write(bytes);
-    const echo = await readExact(bytes.length, CONFIG.readTimeoutMs);
+    const echo = await readEcho(bytes, 200);
+    if (echo.length === 0) return;
     let same = true;
-    for (let i = 0; i < bytes.length; i++) {
+    const minLen = Math.min(echo.length, bytes.length);
+    for (let i = 0; i < minLen; i++) {
       if (echo[i] !== bytes[i]) { same = false; break; }
     }
     if (!same) {
-      logUsb("echo mismatch");
+      buffer = echo.concat(buffer);
+      logUsb("echo mismatch (kept as RX)");
+      return;
+    }
+    if (echo.length > bytes.length) {
+      buffer = echo.slice(bytes.length).concat(buffer);
     }
   }
 
