@@ -165,6 +165,7 @@
   let logTimer = null;
   let commandQueue = Promise.resolve();
   let breakSupported = true;
+  let readTimeoutMs = CONFIG.readTimeoutMs;
 
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -228,7 +229,8 @@
   }
 
   async function readExact(length, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
+    const effectiveTimeout = timeoutMs || readTimeoutMs;
+    const deadline = Date.now() + effectiveTimeout;
     while (buffer.length < length) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("timeout");
@@ -289,7 +291,7 @@
   }
 
   async function readPdu(timeoutMs) {
-    const header = await readExact(4, timeoutMs || CONFIG.readTimeoutMs);
+    const header = await readExact(4, timeoutMs || readTimeoutMs);
     let counter = header[0];
     let data = [];
     if (counter === 0x80) {
@@ -298,7 +300,7 @@
       counter = counter - 0x80;
       data.push(header[3]);
     }
-    const rest = await readExact(counter, timeoutMs || CONFIG.readTimeoutMs);
+    const rest = await readExact(counter, timeoutMs || readTimeoutMs);
     for (let i = 0; i < rest.length - 1; i++) data.push(rest[i]);
     return Uint8Array.from(data);
   }
@@ -334,6 +336,7 @@
 
   async function initKwp() {
     await ensureReaderWriter();
+    readTimeoutMs = 2000;
 
     try {
       await port.setSignals({ dataTerminalReady: true });
@@ -457,6 +460,7 @@
 
     logUsb("Trying to start diagnostic session");
     await startDiagnosticSession(0x85);
+    readTimeoutMs = 12000;
 
     logUsb("Set timing parameters to maximum");
     try { await setTimingParametersMax(); } catch (e) { logUsb("timing params failed"); }
