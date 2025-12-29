@@ -317,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = f"data: {data}\n\n".encode("utf-8")
                 self.wfile.write(payload)
                 self.wfile.flush()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            return
         except Exception:
             return
 
