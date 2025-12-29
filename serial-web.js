@@ -5,7 +5,8 @@
   }
 
   const CONFIG = {
-    baudRate: 120000,
+    baudInit: 10400,
+    baudSession: 120000,
     txId: 0x11,
     rxId: 0xf1,
     logIntervalMs: 100,
@@ -228,6 +229,19 @@
     if (!writer) writer = port.writable.getWriter();
   }
 
+  async function reopenPort(baudRate) {
+    try { if (reader) reader.releaseLock(); } catch (e) {}
+    try { if (writer) writer.releaseLock(); } catch (e) {}
+    reader = null;
+    writer = null;
+    buffer = [];
+    if (port) {
+      try { await port.close(); } catch (e) {}
+      await port.open({ baudRate });
+    }
+    await ensureReaderWriter();
+  }
+
   async function readExact(length, timeoutMs) {
     const effectiveTimeout = timeoutMs || readTimeoutMs;
     const deadline = Date.now() + effectiveTimeout;
@@ -259,6 +273,7 @@
 
   async function writeRaw(bytes) {
     await delay(100);
+    logUsb("TX " + Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join(" "));
     await writer.write(bytes);
     const echo = await readExact(bytes.length, CONFIG.readTimeoutMs);
     let same = true;
@@ -307,6 +322,7 @@
 
   async function sendReadPdu(pdu) {
     const payload = buildPayload(pdu);
+    logUsb("PDU TX " + Array.from(pdu).map((b) => b.toString(16).padStart(2, "0")).join(" "));
     await writeRaw(payload);
     return readPdu();
   }
@@ -459,7 +475,8 @@
     startKeepAlive();
 
     logUsb("Trying to start diagnostic session");
-    await startDiagnosticSession(0x85);
+    await startDiagnosticSession(0x85, 0x05);
+    await reopenPort(CONFIG.baudSession);
     readTimeoutMs = 12000;
 
     logUsb("Set timing parameters to maximum");
@@ -540,7 +557,7 @@
   async function connectSerial() {
     try {
       port = await navigator.serial.requestPort();
-      await port.open({ baudRate: CONFIG.baudRate });
+      await port.open({ baudRate: CONFIG.baudInit });
       await ensureReaderWriter();
       await runKwpLogger();
       setUiConnected(true);
