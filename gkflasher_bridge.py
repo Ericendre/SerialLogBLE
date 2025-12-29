@@ -17,8 +17,9 @@ except Exception:  # pragma: no cover
 
 
 ROOT = Path(__file__).resolve().parent
-GKFLASHER = ROOT / "GKFlasher" / "gkflasher.py"
-LOGGING_PY = ROOT / "GKFlasher" / "flasher" / "logging.py"
+GKFLASHER_DIR = ROOT / "GKFlasher"
+GKFLASHER = GKFLASHER_DIR / "gkflasher.py"
+LOGGING_PY = GKFLASHER_DIR / "flasher" / "logging.py"
 
 
 def load_data_sources():
@@ -118,7 +119,7 @@ class GKFlasherBridge:
         ]
         self.proc = subprocess.Popen(
             cmd,
-            cwd=str(ROOT),
+            cwd=str(GKFLASHER_DIR),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
