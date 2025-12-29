@@ -92,8 +92,12 @@
   <div class="row">
     <button id="btnConnect">Connecter</button>
     <button id="btnDisconnect" disabled>Déconnecter</button>
-    <button id="btnSerialConnect">Connecter USB</button>
-    <button id="btnSerialDisconnect" disabled>Déconnecter USB</button>
+    <label>Port COM:
+      <select id="comPort"></select>
+    </label>
+    <button id="btnComRefresh" class="pill">Rafraîchir</button>
+    <button id="btnPyStart" class="pill">Démarrer log ECU</button>
+    <button id="btnPyStop" class="pill" disabled>Stop log ECU</button>
 
     <button id="btnPause" disabled>Pause affichage</button>
     <span class="pill">Affichage: <b id="plotState">LIVE</b></span>
@@ -180,7 +184,7 @@
   const btnShowLog = document.getElementById("btnShowLog");
   const btnClearLog = document.getElementById("btnClearLog");
   const logBleEl = document.getElementById("logBle");
-  const logUsbEl = document.getElementById("logUsb");
+  const logPyEl = document.getElementById("logPy");
   const autoScrollEl = document.getElementById("autoScroll");
   const btnFull = document.getElementById("btnFull");
   const fieldReadoutsEl = document.getElementById("topReadouts") || document.getElementById("fieldReadouts");
@@ -189,7 +193,7 @@
   const logOverlay = document.createElement('div');
   logOverlay.id = 'logOverlay';
   logOverlay.style.cssText = 'position:fixed; left:10%; top:10%; width:80%; height:80%; background:rgba(255,255,255,0.98); border:1px solid #ddd; border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,0.2); display:none; z-index:9999; padding:10px; box-sizing:border-box; overflow:auto;';
-  logOverlay.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Serial log</strong><div style="display:flex; gap:10px; align-items:center;"><label><input id="logBle" type="checkbox" checked> Log BLE</label><label><input id="logUsb" type="checkbox" checked> Log USB</label><button id="closeLogOverlay" class="pill">Fermer</button></div></div><pre id="serialLog" style="height:calc(100% - 40px); margin:0; padding:8px; border-radius:6px; background:#fefefe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow:auto;"></pre>';
+  logOverlay.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Serial log</strong><div style="display:flex; gap:10px; align-items:center;"><label><input id="logBle" type="checkbox" checked> Log BLE</label><label><input id="logPy" type="checkbox" checked> Log Python</label><button id="closeLogOverlay" class="pill">Fermer</button></div></div><pre id="serialLog" style="height:calc(100% - 40px); margin:0; padding:8px; border-radius:6px; background:#fefefe; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow:auto;"></pre>';
   document.body.appendChild(logOverlay);
   const serialLogEl = document.getElementById('serialLog');
   const closeLogOverlay = document.getElementById('closeLogOverlay');
@@ -202,8 +206,8 @@
   function appendLog(line, source) {
     if (!line) return;
     if (source === "ble" && logBleEl && !logBleEl.checked) return;
-    if (source === "usb" && logUsbEl && !logUsbEl.checked) return;
-    const prefix = source === "ble" ? "[BLE] " : (source === "usb" ? "[USB] " : "");
+    if (source === "py" && logPyEl && !logPyEl.checked) return;
+    const prefix = source === "ble" ? "[BLE] " : (source === "py" ? "[PY] " : "");
     serialLines.push(prefix + line);
     if (serialLines.length > LOG_MAX) serialLines.splice(0, serialLines.length - LOG_MAX);
     serialLogEl.textContent = serialLines.join("\n");
@@ -764,6 +768,6 @@
     try { if (device?.gatt?.connected) device.gatt.disconnect(); } catch(e) {}
   });
 </script>
-<script src="serial-web.js"></script>
+<script src="bridge-client.js"></script>
 </body>
 </html>
