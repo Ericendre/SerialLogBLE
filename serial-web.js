@@ -10,6 +10,7 @@
     rxId: 0xf1,
     logIntervalMs: 100,
     readTimeoutMs: 2000,
+    debugRx: true,
     keepAliveMs: 1500
   };
 
@@ -183,6 +184,10 @@
     try { if (typeof appendLog === "function") appendLog(line, "usb"); } catch (e) {}
   }
 
+  function hexDump(bytes) {
+    return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join(" ");
+  }
+
   function readLE(bytes) {
     let val = 0;
     for (let i = 0; i < bytes.length; i++) {
@@ -250,6 +255,7 @@
       const { value, done } = result;
       if (done) throw new Error("serial closed");
       if (value && value.length) {
+        if (CONFIG.debugRx) logUsb("RX " + hexDump(value));
         buffer.push(...value);
       }
     }
@@ -279,6 +285,7 @@
       const { value, done } = result;
       if (done) break;
       if (value && value.length) {
+        if (CONFIG.debugRx) logUsb("RX " + hexDump(value));
         collected.push(...value);
       }
     }
@@ -298,7 +305,7 @@
     }
     if (!same) {
       buffer = echo.concat(buffer);
-      logUsb("echo mismatch (kept as RX)");
+      logUsb("echo mismatch (kept as RX): " + hexDump(echo));
       return;
     }
     if (echo.length > bytes.length) {
